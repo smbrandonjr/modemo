@@ -47,26 +47,56 @@ class ModemConnection:
         self.baudrate = baudrate
         self.timeout = timeout
         self.connection: Optional[serial.Serial] = None
+        self.rtscts = None  # Will be auto-detected
 
     def connect(self) -> bool:
         """Establish serial connection to modem"""
-        try:
-            self.connection = serial.Serial(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE
-            )
-            time.sleep(0.5)
-            # Clear any pending data
-            self.connection.reset_input_buffer()
-            self.connection.reset_output_buffer()
-            return True
-        except Exception as e:
-            console.print(f"[red]Connection Error: {e}[/red]")
-            return False
+        # Try without hardware flow control first (most modems don't use it)
+        # Then try with it if that fails
+        for rtscts_setting in [False, True]:
+            try:
+                self.connection = serial.Serial(
+                    port=self.port,
+                    baudrate=self.baudrate,
+                    timeout=self.timeout,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    rtscts=rtscts_setting,
+                    xonxoff=False,
+                    dsrdtr=False
+                )
+                time.sleep(0.3)
+
+                # Clear any pending data
+                self.connection.reset_input_buffer()
+                self.connection.reset_output_buffer()
+
+                # Test with AT command
+                self.connection.write(b'AT\r\n')
+                time.sleep(0.3)
+                response = self.connection.read(self.connection.in_waiting or 100).decode('utf-8', errors='ignore')
+
+                if 'OK' in response or 'AT' in response:
+                    # Connection works with this flow control setting
+                    self.rtscts = rtscts_setting
+                    # Clear buffers again for clean slate
+                    self.connection.reset_input_buffer()
+                    self.connection.reset_output_buffer()
+                    return True
+                else:
+                    # Try next setting
+                    self.connection.close()
+
+            except Exception as e:
+                if self.connection and self.connection.is_open:
+                    self.connection.close()
+                # If this was the last attempt, show error
+                if rtscts_setting == True:
+                    console.print(f"[red]Connection Error: {e}[/red]")
+                continue
+
+        return False
 
     def disconnect(self):
         """Close serial connection"""
