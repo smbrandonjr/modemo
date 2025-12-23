@@ -59,6 +59,7 @@ class ModemConnection:
                     port=self.port,
                     baudrate=self.baudrate,
                     timeout=self.timeout,
+                    write_timeout=self.timeout,
                     bytesize=serial.EIGHTBITS,
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
@@ -66,27 +67,39 @@ class ModemConnection:
                     xonxoff=False,
                     dsrdtr=False
                 )
-                time.sleep(0.3)
+                time.sleep(0.5)
 
                 # Clear any pending data
                 self.connection.reset_input_buffer()
                 self.connection.reset_output_buffer()
+                time.sleep(0.2)
 
-                # Test with AT command
-                self.connection.write(b'AT\r\n')
-                time.sleep(0.3)
-                response = self.connection.read(self.connection.in_waiting or 100).decode('utf-8', errors='ignore')
+                # Test with AT command - try multiple times for broken pipe issues
+                for attempt in range(3):
+                    try:
+                        self.connection.write(b'AT\r\n')
+                        self.connection.flush()
+                        time.sleep(0.5)
+                        response = self.connection.read(self.connection.in_waiting or 100).decode('utf-8',
+                                                                                                  errors='ignore')
 
-                if 'OK' in response or 'AT' in response:
-                    # Connection works with this flow control setting
-                    self.rtscts = rtscts_setting
-                    # Clear buffers again for clean slate
-                    self.connection.reset_input_buffer()
-                    self.connection.reset_output_buffer()
-                    return True
-                else:
-                    # Try next setting
-                    self.connection.close()
+                        if 'OK' in response or 'AT' in response:
+                            # Connection works with this flow control setting
+                            self.rtscts = rtscts_setting
+                            # Clear buffers again for clean slate
+                            self.connection.reset_input_buffer()
+                            self.connection.reset_output_buffer()
+                            return True
+
+                    except (BrokenPipeError, OSError) as e:
+                        if attempt < 2:
+                            time.sleep(0.3)
+                            continue
+                        else:
+                            raise
+
+                # No response, try next setting
+                self.connection.close()
 
             except Exception as e:
                 if self.connection and self.connection.is_open:
