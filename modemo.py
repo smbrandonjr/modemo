@@ -912,6 +912,51 @@ class NetworkTools:
         console.print("[green]FPLMN clear operation completed[/green]")
         console.print("[yellow]Note: You may need to restart the modem for changes to take effect[/yellow]")
 
+    def view_fplmn(self):
+        """View forbidden network list (FPLMN)"""
+        console.print("\n[bold cyan]Forbidden Network List (FPLMN)[/bold cyan]\n")
+        console.print("This shows networks that the modem has been denied access to.\n")
+
+        # Method 1: Try to read FPLMN from SIM EF_FPLMN file
+        console.print("[cyan]Attempting to read FPLMN from SIM...[/cyan]")
+        result = self.modem.send_at_command('AT+CRSM=176,28539,0,0,12')
+
+        if result.success and result.raw_response:
+            console.print(Panel(result.raw_response, title="[cyan]FPLMN Data (Raw)[/cyan]", box=box.ROUNDED))
+
+            # Try to parse hex data
+            # FPLMN is stored as 3-byte BCD entries (MCC+MNC)
+            # Format: AA BB CC where AA/BB = MCC, CC = MNC
+            console.print("\n[dim]Note: FPLMN is stored in BCD format (3 bytes per entry)[/dim]")
+            console.print("[dim]Example: '13 F0 62' = MCC 310, MNC 260 (T-Mobile US)[/dim]")
+        else:
+            console.print("[yellow]Could not read FPLMN from SIM (may not be supported)[/yellow]")
+
+        console.print()
+
+        # Method 2: Check preferred operator list (CPOL)
+        console.print("[cyan]Checking Preferred Operator List (CPOL)...[/cyan]")
+        cpol_result = self.modem.send_at_command('AT+CPOL?')
+
+        if cpol_result.success and cpol_result.raw_response:
+            console.print(Panel(cpol_result.raw_response, title="[cyan]Preferred Operators[/cyan]", box=box.ROUNDED))
+        else:
+            console.print("[yellow]Could not read CPOL (may not be supported)[/yellow]")
+
+        console.print()
+
+        # Method 3: Try alternative CPLS command (some modems)
+        console.print("[cyan]Checking for alternative FPLMN commands...[/cyan]")
+        cpls_result = self.modem.send_at_command('AT+CPLS?')
+
+        if cpls_result.success and 'OK' in cpls_result.raw_response:
+            console.print(Panel(cpls_result.raw_response, title="[cyan]PLMN Selection[/cyan]", box=box.ROUNDED))
+        else:
+            console.print("[yellow]Alternative commands not supported on this modem[/yellow]")
+
+        console.print()
+        console.print("[dim]Note: If FPLMN appears empty (FFFFFF...), no networks are currently forbidden.[/dim]")
+
     def configure_apn(self):
         """Configure APN settings"""
         console.print("\n[bold cyan]Configure APN Settings[/bold cyan]\n")
@@ -1498,13 +1543,14 @@ class ModemDiagnosticTool:
             console.print()
 
             console.print("  [bold cyan]1[/bold cyan]. Scan Available Networks")
-            console.print("  [bold cyan]2[/bold cyan]. Clear Forbidden Network List (FPLMN)")
-            console.print("  [bold cyan]3[/bold cyan]. Configure APN")
-            console.print("  [bold cyan]4[/bold cyan]. Force Network Registration")
+            console.print("  [bold cyan]2[/bold cyan]. View Forbidden Network List (FPLMN)")
+            console.print("  [bold cyan]3[/bold cyan]. Clear Forbidden Network List (FPLMN)")
+            console.print("  [bold cyan]4[/bold cyan]. Configure APN")
+            console.print("  [bold cyan]5[/bold cyan]. Force Network Registration")
             console.print("  [bold cyan]0[/bold cyan]. Back to Main Menu")
             console.print()
 
-            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4"], default="1")
+            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4", "5"], default="1")
 
             if choice == "0":
                 break
@@ -1512,12 +1558,15 @@ class ModemDiagnosticTool:
                 tools.scan_networks()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "2":
-                tools.clear_fplmn()
+                tools.view_fplmn()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "3":
-                tools.configure_apn()
+                tools.clear_fplmn()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "4":
+                tools.configure_apn()
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "5":
                 tools.force_network_registration()
                 Prompt.ask("\nPress Enter to continue")
 
