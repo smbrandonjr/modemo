@@ -1220,6 +1220,213 @@ class DataTransferTest:
 
     def __init__(self, modem: ModemConnection):
         self.modem = modem
+        self.wifi_was_disabled = False
+        self.original_wifi_interface = None
+
+    def get_default_route(self) -> Optional[Dict[str, str]]:
+        """Get the current default route interface"""
+        try:
+            if IS_LINUX:
+                result = subprocess.run(['ip', 'route', 'show', 'default'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    # Parse: "default via 192.168.1.1 dev wlan0 proto dhcp metric 600"
+                    match = re.search(r'dev\s+(\S+)', result.stdout)
+                    if match:
+                        iface = match.group(1)
+                        # Get IP for this interface
+                        ip_result = subprocess.run(['ip', 'addr', 'show', iface],
+                                                  capture_output=True, text=True, timeout=5)
+                        ip_addr = None
+                        if ip_result.returncode == 0:
+                            ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', ip_result.stdout)
+                            if ip_match:
+                                ip_addr = ip_match.group(1)
+
+                        return {
+                            'interface': iface,
+                            'ip': ip_addr,
+                            'type': 'WiFi' if 'wlan' in iface else 'Ethernet' if 'eth' in iface else 'Cellular' if any(x in iface for x in ['wwan', 'ppp']) else 'Unknown'
+                        }
+            elif IS_WINDOWS:
+                result = subprocess.run(['route', 'print', '0.0.0.0'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # Parse Windows route output
+                    for line in result.stdout.split('\n'):
+                        if '0.0.0.0' in line and 'On-link' not in line:
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                return {'interface': 'default', 'ip': parts[2], 'type': 'Unknown'}
+        except Exception as e:
+            if DEBUG_MODE:
+                console.print(f"[yellow]Error getting default route: {e}[/yellow]")
+
+        return None
+
+    def get_wifi_interface(self) -> Optional[str]:
+        """Detect WiFi interface name"""
+        try:
+            if IS_LINUX:
+                result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # Look for wlan interfaces
+                    match = re.search(r'\d+:\s+(wlan\d+):', result.stdout)
+                    if match:
+                        return match.group(1)
+            elif IS_WINDOWS:
+                result = subprocess.run(['netsh', 'interface', 'show', 'interface'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if 'wi-fi' in line.lower() or 'wireless' in line.lower():
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                return ' '.join(parts[3:])
+        except Exception:
+            pass
+
+        return None
+
+    def check_wifi_status(self) -> Dict[str, any]:
+        """Check if WiFi is active and is the default route"""
+        status = {
+            'wifi_interface': None,
+            'wifi_is_up': False,
+            'wifi_has_ip': False,
+            'wifi_is_default': False,
+            'default_route': None
+        }
+
+        # Get WiFi interface
+        wifi_iface = self.get_wifi_interface()
+        status['wifi_interface'] = wifi_iface
+
+        if wifi_iface and IS_LINUX:
+            # Check if WiFi is UP
+            try:
+                result = subprocess.run(['ip', 'link', 'show', wifi_iface],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    status['wifi_is_up'] = 'state UP' in result.stdout
+
+                    # Check if WiFi has IP
+                    ip_result = subprocess.run(['ip', 'addr', 'show', wifi_iface],
+                                              capture_output=True, text=True, timeout=5)
+                    if ip_result.returncode == 0:
+                        status['wifi_has_ip'] = bool(re.search(r'inet\s+\d+', ip_result.stdout))
+            except Exception:
+                pass
+
+        # Check default route
+        default_route = self.get_default_route()
+        status['default_route'] = default_route
+
+        if default_route and wifi_iface:
+            status['wifi_is_default'] = default_route['interface'] == wifi_iface
+
+        return status
+
+    def disable_wifi_temporarily(self) -> bool:
+        """Temporarily disable WiFi (requires sudo)"""
+        wifi_iface = self.get_wifi_interface()
+        if not wifi_iface:
+            return False
+
+        try:
+            if IS_LINUX:
+                result = subprocess.run(['sudo', 'ip', 'link', 'set', wifi_iface, 'down'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.wifi_was_disabled = True
+                    self.original_wifi_interface = wifi_iface
+                    return True
+                else:
+                    console.print(f"[red]Failed to disable WiFi: {result.stderr}[/red]")
+                    return False
+            elif IS_WINDOWS:
+                result = subprocess.run(['netsh', 'interface', 'set', 'interface', wifi_iface, 'disabled'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.wifi_was_disabled = True
+                    self.original_wifi_interface = wifi_iface
+                    return True
+                else:
+                    return False
+        except Exception as e:
+            console.print(f"[red]Error disabling WiFi: {e}[/red]")
+            return False
+
+    def enable_wifi(self) -> bool:
+        """Re-enable WiFi if it was disabled by this tool"""
+        if not self.wifi_was_disabled or not self.original_wifi_interface:
+            return False
+
+        try:
+            if IS_LINUX:
+                result = subprocess.run(['sudo', 'ip', 'link', 'set', self.original_wifi_interface, 'up'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.wifi_was_disabled = False
+                    console.print(f"[green]✓ WiFi ({self.original_wifi_interface}) re-enabled[/green]")
+                    return True
+            elif IS_WINDOWS:
+                result = subprocess.run(['netsh', 'interface', 'set', 'interface', self.original_wifi_interface, 'enabled'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.wifi_was_disabled = False
+                    console.print(f"[green]✓ WiFi ({self.original_wifi_interface}) re-enabled[/green]")
+                    return True
+        except Exception as e:
+            console.print(f"[red]Error re-enabling WiFi: {e}[/red]")
+
+        return False
+
+    def verify_routing(self) -> Dict[str, any]:
+        """Comprehensive routing verification before test"""
+        verification = {
+            'cellular_available': False,
+            'cellular_interface': None,
+            'wifi_active': False,
+            'wifi_is_default': False,
+            'routing_ok': False,
+            'warnings': [],
+            'recommendations': []
+        }
+
+        # Get cellular interfaces
+        cellular_ifaces = self.get_cellular_interfaces()
+        if cellular_ifaces:
+            for iface in cellular_ifaces:
+                if iface['status'] == 'UP' and iface['ip'] != 'No IP assigned':
+                    verification['cellular_available'] = True
+                    verification['cellular_interface'] = iface['name']
+                    break
+
+        if not verification['cellular_available']:
+            verification['warnings'].append("No active cellular interface with IP address found")
+            verification['recommendations'].append("Activate PDP context first (APN & Data Connection → Check PDP Context)")
+
+        # Check WiFi status
+        wifi_status = self.check_wifi_status()
+        verification['wifi_active'] = wifi_status['wifi_is_up'] and wifi_status['wifi_has_ip']
+        verification['wifi_is_default'] = wifi_status['wifi_is_default']
+
+        if verification['wifi_is_default']:
+            verification['warnings'].append(f"WiFi ({wifi_status['wifi_interface']}) is the default route")
+            verification['warnings'].append("Test data will go over WiFi, NOT cellular!")
+            verification['recommendations'].append("Disable WiFi temporarily (recommended)")
+            verification['recommendations'].append("Or configure routing manually")
+        elif verification['wifi_active']:
+            verification['warnings'].append("WiFi is active but not default route")
+
+        # Determine if routing is OK for cellular test
+        verification['routing_ok'] = (
+            verification['cellular_available'] and
+            not verification['wifi_is_default']
+        )
+
+        return verification
 
     def get_cellular_interfaces(self) -> List[Dict[str, str]]:
         """Detect available cellular network interfaces"""
@@ -2407,6 +2614,124 @@ class ModemDiagnosticTool:
                     Prompt.ask("\nPress Enter to continue")
                     continue
 
+                # ROUTING VERIFICATION - Critical for cellular data test
+                console.print("\n[bold cyan]🔍 Verifying Routing Configuration...[/bold cyan]\n")
+                routing = transfer_test.verify_routing()
+
+                # Display routing status
+                table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta", title="Routing Status")
+                table.add_column("Check", style="cyan", width=30)
+                table.add_column("Status", style="white", width=40)
+
+                # Cellular check
+                if routing['cellular_available']:
+                    table.add_row("Cellular Interface", f"[green]✓ {routing['cellular_interface']} (Active)[/green]")
+                else:
+                    table.add_row("Cellular Interface", "[red]✗ No active cellular interface[/red]")
+
+                # WiFi check
+                wifi_status = transfer_test.check_wifi_status()
+                if wifi_status['wifi_is_default']:
+                    table.add_row("WiFi Status", f"[red]✗ {wifi_status['wifi_interface']} (DEFAULT ROUTE!)[/red]")
+                elif wifi_status['wifi_is_up']:
+                    table.add_row("WiFi Status", f"[yellow]⚠ {wifi_status['wifi_interface']} (Active but not default)[/yellow]")
+                else:
+                    table.add_row("WiFi Status", "[green]✓ Disabled or down[/green]")
+
+                # Default route
+                default_route = routing.get('default_route') or wifi_status['default_route']
+                if default_route:
+                    route_color = "green" if default_route['type'] == 'Cellular' else "red"
+                    table.add_row("Default Route", f"[{route_color}]{default_route['interface']} ({default_route['type']})[/{route_color}]")
+
+                # Overall status
+                if routing['routing_ok']:
+                    table.add_row("", "")
+                    table.add_row("[bold]Overall Status[/bold]", "[bold green]✓ Routing OK for cellular test[/bold green]")
+                else:
+                    table.add_row("", "")
+                    table.add_row("[bold]Overall Status[/bold]", "[bold red]✗ Routing NOT configured for cellular[/bold red]")
+
+                console.print(table)
+                console.print()
+
+                # Show warnings if any
+                if routing['warnings']:
+                    console.print("[bold red]⚠️  WARNINGS:[/bold red]")
+                    for warning in routing['warnings']:
+                        console.print(f"  • {warning}")
+                    console.print()
+
+                # Handle routing issues
+                if not routing['routing_ok']:
+                    if routing['wifi_is_default']:
+                        console.print("[bold yellow]🔧 Fix Routing Issue:[/bold yellow]")
+                        console.print("  [bold]WiFi is your default route - test data will use WiFi![/bold]")
+                        console.print()
+                        console.print("  Options:")
+                        console.print("    1. [green]Disable WiFi temporarily (recommended)[/green]")
+                        console.print("    2. Show manual routing commands")
+                        console.print("    3. Continue anyway (test will use WiFi, NOT cellular)")
+                        console.print("    0. Cancel test")
+                        console.print()
+
+                        fix_choice = Prompt.ask("Select option", choices=["0", "1", "2", "3"], default="1")
+
+                        if fix_choice == "0":
+                            console.print("[yellow]Test cancelled[/yellow]")
+                            Prompt.ask("\nPress Enter to continue")
+                            continue
+                        elif fix_choice == "1":
+                            # Disable WiFi temporarily
+                            console.print("\n[cyan]Disabling WiFi temporarily...[/cyan]")
+                            console.print("[dim](WiFi will be re-enabled after test or when you exit)[/dim]\n")
+                            if transfer_test.disable_wifi_temporarily():
+                                console.print("[green]✓ WiFi disabled successfully[/green]")
+                                console.print("[green]✓ Cellular should now be the default route[/green]")
+                                time.sleep(2)
+                            else:
+                                console.print("[red]✗ Failed to disable WiFi[/red]")
+                                console.print("[yellow]You may need to run with sudo or disable WiFi manually[/yellow]")
+                                if not Confirm.ask("\nContinue with test anyway?", default=False):
+                                    console.print("[yellow]Test cancelled[/yellow]")
+                                    Prompt.ask("\nPress Enter to continue")
+                                    continue
+                        elif fix_choice == "2":
+                            # Show manual commands
+                            console.print("\n[bold cyan]Manual Routing Commands:[/bold cyan]\n")
+                            if IS_LINUX:
+                                console.print("[cyan]Disable WiFi:[/cyan]")
+                                console.print(f"  sudo ip link set {wifi_status['wifi_interface']} down")
+                                console.print()
+                                console.print("[cyan]Or configure route for specific destination:[/cyan]")
+                                console.print(f"  sudo ip route add 1.1.1.1 dev {routing['cellular_interface']}")
+                                console.print()
+                                console.print("[cyan]Re-enable WiFi after test:[/cyan]")
+                                console.print(f"  sudo ip link set {wifi_status['wifi_interface']} up")
+                            elif IS_WINDOWS:
+                                console.print("[cyan]Disable WiFi:[/cyan]")
+                                console.print(f"  netsh interface set interface \"{wifi_status['wifi_interface']}\" disabled")
+                                console.print()
+                                console.print("[cyan]Re-enable WiFi:[/cyan]")
+                                console.print(f"  netsh interface set interface \"{wifi_status['wifi_interface']}\" enabled")
+                            console.print()
+                            Prompt.ask("Press Enter to return to menu")
+                            continue
+                        elif fix_choice == "3":
+                            console.print("\n[bold red]⚠️  WARNING: Test will use WiFi, NOT cellular![/bold red]")
+                            console.print("[red]Hologram dashboard will show ZERO usage increase![/red]")
+                            if not Confirm.ask("\nAre you sure you want to continue?", default=False):
+                                console.print("[yellow]Test cancelled[/yellow]")
+                                Prompt.ask("\nPress Enter to continue")
+                                continue
+                    elif not routing['cellular_available']:
+                        console.print("[bold red]✗ No active cellular interface found[/bold red]")
+                        console.print("\n[yellow]Troubleshooting:[/yellow]")
+                        for rec in routing['recommendations']:
+                            console.print(f"  • {rec}")
+                        Prompt.ask("\nPress Enter to continue")
+                        continue
+
                 # Detect interface (optional)
                 interfaces = transfer_test.get_cellular_interfaces()
                 interface_name = None
@@ -2463,7 +2788,21 @@ class ModemDiagnosticTool:
                     console.print("  • Ensure routing is configured to use cellular")
                     console.print("  • Try disabling WiFi temporarily")
 
+                # Re-enable WiFi if it was disabled for this test
+                if transfer_test.wifi_was_disabled:
+                    console.print()
+                    if Confirm.ask("[yellow]Re-enable WiFi now?[/yellow]", default=True):
+                        transfer_test.enable_wifi()
+
                 Prompt.ask("\nPress Enter to continue")
+
+        # Cleanup: Re-enable WiFi when exiting menu
+        if transfer_test.wifi_was_disabled:
+            console.print("\n[yellow]⚠️  WiFi is still disabled from testing[/yellow]")
+            if Confirm.ask("Re-enable WiFi before exiting?", default=True):
+                transfer_test.enable_wifi()
+            else:
+                console.print("[dim]Remember to re-enable WiFi manually later![/dim]")
 
     def common_at_commands_menu(self):
         """Menu of common AT commands with descriptions"""

@@ -469,8 +469,36 @@ Main Menu → APN & Data Connection (4) → Test Data Transfer (7)
 - 10 KB payload = ~14 KB total billed
 - 100 KB payload = ~105 KB total billed
 
+**Automatic Routing Check (NEW!):**
+The tool now verifies routing BEFORE sending data:
+
+```
+After confirming test:
+┌─────────────────────────────┐
+│ 🔍 Verifying Routing...     │
+│                             │
+│ Cellular: ✓ wwan0 (Active) │
+│ WiFi:     ✗ wlan0 (DEFAULT!)│
+│ Route:    wlan0 (WiFi)      │
+│                             │
+│ Status: ✗ NOT OK           │
+│                             │
+│ Options:                    │
+│ 1. Disable WiFi (recommended)│
+│ 2. Show manual commands     │
+│ 3. Continue anyway          │
+│ 0. Cancel                   │
+└─────────────────────────────┘
+```
+
+**WiFi Management:**
+- Tool can disable WiFi temporarily (needs sudo)
+- Automatically re-enabled after test
+- One-click fix for routing issues
+
 **Tips:**
-- Disable WiFi or configure routing for cellular
+- Tool handles routing automatically now!
+- Just choose "Disable WiFi temporarily" if prompted
 - Dashboard updates take 1-2 minutes
 - Actual may vary ±10% due to network conditions
 - Uses real data (costs apply)

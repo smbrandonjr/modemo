@@ -318,9 +318,30 @@ Automatically selecting:
 - For 10KB payload: expect ~14KB total
 - For 100KB payload: expect ~105KB total
 
+**Automatic Routing Verification (NEW!):**
+The tool now automatically checks your routing configuration before sending test data:
+- ✅ Detects if WiFi is your default route
+- ✅ Warns you if data will go over WiFi instead of cellular
+- ✅ Offers to disable WiFi temporarily with one click
+- ✅ Auto re-enables WiFi after test
+- ✅ Shows manual routing commands if needed
+
+**What Happens:**
+1. You confirm to send test data
+2. Tool checks routing: "WiFi (wlan0) is DEFAULT ROUTE!"
+3. You're given options:
+   - **Disable WiFi temporarily (recommended)** ← One-click fix
+   - Show manual routing commands
+   - Continue anyway (will use WiFi, not cellular)
+   - Cancel test
+4. Tool disables WiFi (if you chose option 1)
+5. Test runs over cellular
+6. Tool offers to re-enable WiFi
+
 **Important Notes:**
 - Uses real cellular data (costs apply)
-- Ensure WiFi is disabled or routing is configured
+- **Routing is now verified automatically** - no more guessing!
+- WiFi management requires sudo/admin privileges
 - Dashboard updates may take 1-2 minutes
 - Actual usage may vary ±10% due to network conditions
 
@@ -689,6 +710,10 @@ The optimized two-phase auto-detection provides significant speed improvements:
   - Clear expectations for Hologram dashboard validation
   - Cellular interface detection
   - Step-by-step validation instructions
+  - **Automatic routing verification** - Detects if WiFi is default route
+  - **One-click WiFi management** - Temporarily disable/enable WiFi for testing
+  - Shows routing status before sending data
+  - Prevents accidental WiFi usage when testing cellular
 - **Reorganized menu structure** - Simplified from 9 to 7 main options for better clarity
 - **New "APN & Data Connection" menu** - Consolidated APN config and PDP management
 - **New "Advanced Tools" submenu** - Groups Common AT Commands, Manual AT, and Vendor Tools
