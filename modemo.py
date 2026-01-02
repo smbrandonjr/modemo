@@ -41,6 +41,103 @@ IS_WINDOWS = platform.system() == 'Windows'
 IS_LINUX = platform.system() == 'Linux'
 
 
+class ModemManagerHelper:
+    """Helper to detect and manage ModemManager interference on Linux"""
+
+    @staticmethod
+    def is_running() -> bool:
+        """Check if ModemManager is running"""
+        if not IS_LINUX:
+            return False
+
+        try:
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'ModemManager'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            return result.returncode == 0 and 'active' in result.stdout
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_blocking_port(port: str) -> bool:
+        """Check if ModemManager is using a specific port"""
+        if not IS_LINUX:
+            return False
+
+        try:
+            # Check using lsof
+            result = subprocess.run(
+                ['lsof', port],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            return 'ModemManager' in result.stdout
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_managed_ports() -> List[str]:
+        """Get list of ports managed by ModemManager"""
+        ports = []
+        if not IS_LINUX:
+            return ports
+
+        try:
+            # Use mmcli to list modems
+            result = subprocess.run(
+                ['mmcli', '-L'],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            # Parse output for device paths
+            for line in result.stdout.split('\n'):
+                if 'device' in line.lower():
+                    match = re.search(r'/dev/tty\w+', line)
+                    if match:
+                        ports.append(match.group(0))
+        except Exception:
+            pass
+
+        return ports
+
+    @staticmethod
+    def stop_temporarily() -> bool:
+        """Temporarily stop ModemManager (requires sudo)"""
+        if not IS_LINUX:
+            return False
+
+        try:
+            result = subprocess.run(
+                ['systemctl', 'stop', 'ModemManager'],
+                capture_output=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def restart() -> bool:
+        """Restart ModemManager"""
+        if not IS_LINUX:
+            return False
+
+        try:
+            result = subprocess.run(
+                ['systemctl', 'start', 'ModemManager'],
+                capture_output=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+
 @dataclass
 class ATResponse:
     """Store AT command response with metadata"""
@@ -1151,6 +1248,7 @@ class ModemDiagnosticTool:
     def __init__(self):
         self.modem: Optional[ModemConnection] = None
         self.connected = False
+        self.modemmanager_was_stopped = False  # Track if we stopped ModemManager
 
     def show_banner(self):
         """Display application banner"""
@@ -1163,6 +1261,17 @@ class ModemDiagnosticTool:
 ╚═══════════════════════════════════════════════════════════════╝
         """
         console.print(Panel(banner, style="bold cyan", box=box.DOUBLE))
+
+    def _restart_modemmanager_if_needed(self):
+        """Restart ModemManager if we stopped it"""
+        if self.modemmanager_was_stopped and IS_LINUX:
+            console.print("\n[cyan]Restarting ModemManager...[/cyan]")
+            if ModemManagerHelper.restart():
+                console.print("[green]✓ ModemManager restarted[/green]")
+            else:
+                console.print("[yellow]⚠ Could not restart ModemManager[/yellow]")
+                console.print("[dim]  You may need to restart it manually: sudo systemctl start ModemManager[/dim]")
+            self.modemmanager_was_stopped = False
 
     def detect_serial_ports(self) -> List[Dict]:
         """Detect all available serial ports"""
@@ -1327,10 +1436,39 @@ class ModemDiagnosticTool:
         """Automatically detect cellular modem port with optimized two-phase testing"""
         console.print("\n[bold cyan]🔍 Auto-detecting cellular modem...[/bold cyan]\n")
 
+        # Check for ModemManager interference on Linux
+        modemmanager_was_stopped = False
+        if IS_LINUX and ModemManagerHelper.is_running():
+            console.print("[yellow]⚠ ModemManager is running and may interfere with port detection[/yellow]")
+
+            managed_ports = ModemManagerHelper.get_managed_ports()
+            if managed_ports:
+                console.print(f"[yellow]  ModemManager is managing: {', '.join(managed_ports)}[/yellow]\n")
+
+            console.print("[dim]ModemManager can block access to modem ports and cause detection to hang.[/dim]")
+            console.print("[dim]Options:[/dim]")
+            console.print("[dim]  1. Temporarily stop it (will auto-restart when done)[/dim]")
+            console.print("[dim]  2. Continue anyway (may be slower or hang on some ports)[/dim]")
+            console.print()
+
+            if Confirm.ask("Temporarily stop ModemManager for detection?", default=True):
+                console.print("[cyan]Stopping ModemManager...[/cyan]")
+                if ModemManagerHelper.stop_temporarily():
+                    console.print("[green]✓ ModemManager stopped temporarily[/green]")
+                    console.print("[dim]  (Will auto-restart when you exit this program)[/dim]\n")
+                    modemmanager_was_stopped = True
+                    time.sleep(1)  # Give ports time to release
+                else:
+                    console.print("[yellow]⚠ Could not stop ModemManager (may need sudo)[/yellow]")
+                    console.print("[dim]  Try running: sudo python3 modemo.py[/dim]\n")
+
         ports = self.detect_serial_ports()
 
         if not ports:
             console.print("[red]✗ No serial ports found on this system[/red]")
+            if modemmanager_was_stopped:
+                self.modemmanager_was_stopped = modemmanager_was_stopped
+                self._restart_modemmanager_if_needed()
             return None
 
         # Display found ports
@@ -1446,10 +1584,17 @@ class ModemDiagnosticTool:
             console.print("[dim]  • Modem uses non-standard baud rate[/dim]")
             console.print("[dim]  • Permission issues (try running with sudo)[/dim]")
             console.print("[dim]  • Modem is in a non-AT command mode[/dim]")
+            # Track ModemManager status before returning
+            if modemmanager_was_stopped:
+                self.modemmanager_was_stopped = True
             return None
 
         # Display working ports
         console.print(f"[bold green]✓ Found {len(working_ports)} working modem port(s)![/bold green]\n")
+
+        # Track ModemManager status for later cleanup
+        if modemmanager_was_stopped:
+            self.modemmanager_was_stopped = True
 
         if len(working_ports) == 1:
             # Only one port works, use it automatically
@@ -1987,6 +2132,8 @@ class ModemDiagnosticTool:
         finally:
             if self.modem:
                 self.modem.disconnect()
+            # Restart ModemManager if we stopped it
+            self._restart_modemmanager_if_needed()
             console.print("\n[cyan]Thank you for using Modem Diagnostic Tool![/cyan]\n")
 
 
