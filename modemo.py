@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 Cellular Modem Diagnostic & Configuration Tool
-A comprehensive terminal application for managing cellular modems on Raspberry Pi
+A comprehensive cross-platform terminal application for managing cellular modems
+
+Supports:
+- Windows (COM ports)
+- Linux/Raspberry Pi (USB, ACM, UART serial ports)
+- Auto-detection with optimized two-phase baud rate testing
+- Multiple modem vendors (Quectel, Sierra Wireless, u-blox, Telit, SimCom, etc.)
 """
 
 import serial
@@ -10,6 +16,8 @@ import re
 import json
 import glob
 import subprocess
+import platform
+import os
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -26,6 +34,10 @@ from rich.columns import Columns
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
+
+# Platform detection
+IS_WINDOWS = platform.system() == 'Windows'
+IS_LINUX = platform.system() == 'Linux'
 
 
 @dataclass
@@ -1141,72 +1153,112 @@ class ModemDiagnosticTool:
 
     def detect_serial_ports(self) -> List[Dict]:
         """Detect all available serial ports"""
-        import glob
-        import subprocess
-
         ports = []
 
-        # Common serial port patterns for cellular modems
-        patterns = [
-            '/dev/ttyUSB*',
-            '/dev/ttyACM*',
-            '/dev/ttyAMA*',
-            '/dev/ttyS*'
-        ]
+        if IS_WINDOWS:
+            # Windows COM port detection
+            import serial.tools.list_ports
 
-        for pattern in patterns:
-            for port_path in glob.glob(pattern):
+            for port in serial.tools.list_ports.comports():
                 port_info = {
-                    'path': port_path,
-                    'name': port_path.split('/')[-1],
-                    'type': 'Unknown',
-                    'description': ''
+                    'path': port.device,
+                    'name': port.device,
+                    'type': 'COM Port',
+                    'description': port.description or 'No description',
+                    'vendor': port.manufacturer or '',
+                    'priority': 0  # Will be set based on port number
                 }
 
-                # Try to get additional info from dmesg or udevadm
+                # Extract COM port number for prioritization
                 try:
-                    # Get device info using udevadm
-                    result = subprocess.run(
-                        ['udevadm', 'info', '--name=' + port_path, '--query=property'],
-                        capture_output=True,
-                        text=True,
-                        timeout=2
-                    )
-
-                    if result.returncode == 0:
-                        for line in result.stdout.split('\n'):
-                            if 'ID_MODEL=' in line:
-                                port_info['description'] = line.split('=')[1].strip()
-                            elif 'ID_USB_INTERFACE_NUM=' in line:
-                                interface_num = line.split('=')[1].strip()
-                                port_info['interface'] = interface_num
-                            elif 'ID_VENDOR=' in line:
-                                port_info['vendor'] = line.split('=')[1].strip()
-
-                    # Determine port type
-                    if 'ttyUSB' in port_path:
-                        port_info['type'] = 'USB Serial'
-                    elif 'ttyACM' in port_path:
-                        port_info['type'] = 'USB CDC-ACM'
-                    elif 'ttyAMA' in port_path:
-                        port_info['type'] = 'UART (Hardware)'
-                    elif 'ttyS' in port_path:
-                        port_info['type'] = 'Serial Port'
-
-                except Exception:
-                    pass
+                    com_num = int(re.search(r'COM(\d+)', port.device).group(1))
+                    port_info['priority'] = -com_num  # Lower COM numbers get higher priority
+                except:
+                    port_info['priority'] = 999
 
                 ports.append(port_info)
 
-        return sorted(ports, key=lambda x: x['path'])
+        else:
+            # Linux/Unix serial port detection
+            # Common serial port patterns for cellular modems
+            patterns = [
+                '/dev/ttyUSB*',
+                '/dev/ttyACM*',
+                '/dev/ttyAMA*',
+                '/dev/ttyS*'
+            ]
 
-    def test_port_for_modem(self, port: str, baudrate: int = 115200) -> Tuple[bool, Optional[str]]:
-        """Test if a port responds to AT commands"""
+            for pattern in patterns:
+                for port_path in glob.glob(pattern):
+                    port_info = {
+                        'path': port_path,
+                        'name': port_path.split('/')[-1],
+                        'type': 'Unknown',
+                        'description': '',
+                        'priority': 0
+                    }
+
+                    # Try to get additional info from udevadm
+                    try:
+                        result = subprocess.run(
+                            ['udevadm', 'info', '--name=' + port_path, '--query=property'],
+                            capture_output=True,
+                            text=True,
+                            timeout=1  # Reduced timeout
+                        )
+
+                        if result.returncode == 0:
+                            for line in result.stdout.split('\n'):
+                                if 'ID_MODEL=' in line:
+                                    port_info['description'] = line.split('=')[1].strip()
+                                elif 'ID_USB_INTERFACE_NUM=' in line:
+                                    interface_num = line.split('=')[1].strip()
+                                    port_info['interface'] = interface_num
+                                elif 'ID_VENDOR=' in line:
+                                    port_info['vendor'] = line.split('=')[1].strip()
+
+                        # Determine port type and priority
+                        if 'ttyUSB' in port_path:
+                            port_info['type'] = 'USB Serial'
+                            # USB2, USB1, USB0 get higher priority
+                            if 'ttyUSB2' in port_path:
+                                port_info['priority'] = -3
+                            elif 'ttyUSB1' in port_path:
+                                port_info['priority'] = -2
+                            elif 'ttyUSB0' in port_path:
+                                port_info['priority'] = -1
+                        elif 'ttyACM' in port_path:
+                            port_info['type'] = 'USB CDC-ACM'
+                            port_info['priority'] = 10
+                        elif 'ttyAMA' in port_path:
+                            port_info['type'] = 'UART (Hardware)'
+                            port_info['priority'] = 20
+                        elif 'ttyS' in port_path:
+                            port_info['type'] = 'Serial Port'
+                            port_info['priority'] = 30
+
+                    except Exception:
+                        pass
+
+                    ports.append(port_info)
+
+        # Sort by priority (lower = higher priority)
+        return sorted(ports, key=lambda x: (x.get('priority', 999), x['path']))
+
+    def test_port_for_modem(self, port: str, baudrate: int = 115200, quick_test: bool = False) -> Tuple[bool, Optional[str]]:
+        """Test if a port responds to AT commands
+
+        Args:
+            port: Serial port path
+            baudrate: Baud rate to test
+            quick_test: If True, use faster timeout for initial screening
+        """
         try:
-            test_modem = ModemConnection(port=port, baudrate=baudrate, timeout=2)
+            timeout = 1 if quick_test else 2
+            test_modem = ModemConnection(port=port, baudrate=baudrate, timeout=timeout)
             if test_modem.connect():
                 # Try AT command
-                result = test_modem.send_at_command("AT")
+                result = test_modem.send_at_command("AT", wait_time=0.5 if quick_test else 1.0)
                 test_modem.disconnect()
 
                 if result.success:
@@ -1219,7 +1271,7 @@ class ModemDiagnosticTool:
             return False, str(e)
 
     def auto_detect_modem(self) -> Optional[Tuple[str, int]]:
-        """Automatically detect cellular modem port"""
+        """Automatically detect cellular modem port with optimized two-phase testing"""
         console.print("\n[bold cyan]🔍 Auto-detecting cellular modem...[/bold cyan]\n")
 
         ports = self.detect_serial_ports()
@@ -1254,45 +1306,79 @@ class ModemDiagnosticTool:
         console.print(table)
         console.print()
 
-        # Common baud rates to try
-        baud_rates = [115200, 9600, 460800, 57600, 19200]
-
-        # Test each port with progress indicator
-        console.print("[cyan]Testing ports for AT command response...[/cyan]\n")
+        # Two-phase baud rate testing
+        # Phase 1: Try most common baud rate (115200) on all ports first
+        # Phase 2: Only try other baud rates if Phase 1 finds nothing
+        primary_baudrate = 115200
+        fallback_baudrates = [9600, 460800, 57600, 19200]
 
         working_ports = []
+
+        # Phase 1: Quick scan with most common baud rate
+        console.print(f"[cyan]Phase 1: Quick scan @ {primary_baudrate} baud...[/cyan]\n")
 
         with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 console=console
         ) as progress:
+            task = progress.add_task("[cyan]Scanning ports...", total=len(ports))
 
             for port in ports:
                 port_path = port['path']
-                task = progress.add_task(f"[cyan]Testing {port_path}...", total=len(baud_rates))
+                progress.update(task, description=f"[cyan]Testing {port_path}...")
 
-                for baudrate in baud_rates:
-                    progress.update(task, description=f"[cyan]Testing {port_path} @ {baudrate} baud...")
+                is_working, error = self.test_port_for_modem(port_path, primary_baudrate, quick_test=True)
 
-                    is_working, error = self.test_port_for_modem(port_path, baudrate)
+                if is_working:
+                    working_ports.append({
+                        'port': port_path,
+                        'baudrate': primary_baudrate,
+                        'info': port
+                    })
+                    progress.update(task, description=f"[green]✓ {port_path} @ {primary_baudrate} baud - WORKING!")
+                    time.sleep(0.3)  # Brief pause to show success message
 
-                    if is_working:
-                        working_ports.append({
-                            'port': port_path,
-                            'baudrate': baudrate,
-                            'info': port
-                        })
-                        progress.update(task, description=f"[green]✓ {port_path} @ {baudrate} baud - WORKING!")
-                        break
-
-                    progress.advance(task)
-                    time.sleep(0.1)
-
-                if not any(p['port'] == port_path for p in working_ports):
-                    progress.update(task, description=f"[dim]✗ {port_path} - No response")
+                progress.advance(task)
 
         console.print()
+
+        # Phase 2: If nothing found, try other baud rates
+        if not working_ports:
+            console.print("[yellow]⚠ No modems found with standard baud rate[/yellow]")
+            console.print(f"[cyan]Phase 2: Testing alternate baud rates...[/cyan]\n")
+
+            with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+            ) as progress:
+
+                for port in ports:
+                    port_path = port['path']
+                    task = progress.add_task(f"[cyan]Testing {port_path}...", total=len(fallback_baudrates))
+
+                    for baudrate in fallback_baudrates:
+                        progress.update(task, description=f"[cyan]Testing {port_path} @ {baudrate} baud...")
+
+                        is_working, error = self.test_port_for_modem(port_path, baudrate)
+
+                        if is_working:
+                            working_ports.append({
+                                'port': port_path,
+                                'baudrate': baudrate,
+                                'info': port
+                            })
+                            progress.update(task, description=f"[green]✓ {port_path} @ {baudrate} baud - WORKING!")
+                            time.sleep(0.3)
+                            break
+
+                        progress.advance(task)
+
+                    if not any(p['port'] == port_path for p in working_ports):
+                        progress.update(task, description=f"[dim]✗ {port_path} - No response")
+
+            console.print()
 
         if not working_ports:
             console.print("[yellow]⚠ No working modem ports detected[/yellow]")
@@ -1387,7 +1473,8 @@ class ModemDiagnosticTool:
             else:
                 console.print("\n[yellow]Would you like to try manual configuration instead?[/yellow]")
                 if Confirm.ask("Configure manually?", default=True):
-                    port = Prompt.ask("Enter serial port", default="/dev/ttyUSB2")
+                    default_port = "COM3" if IS_WINDOWS else "/dev/ttyUSB2"
+                    port = Prompt.ask("Enter serial port", default=default_port)
                     baudrate = int(Prompt.ask("Enter baud rate", default="115200"))
                 else:
                     return False
@@ -1403,7 +1490,9 @@ class ModemDiagnosticTool:
                     console.print(f"  • {p['path']} ({p['type']})")
                 console.print()
 
-            port = Prompt.ask("Enter serial port", default="/dev/ttyUSB2")
+            # Platform-aware default port
+            default_port = "COM3" if IS_WINDOWS else "/dev/ttyUSB2"
+            port = Prompt.ask("Enter serial port", default=default_port)
             baudrate = int(Prompt.ask("Enter baud rate", default="115200"))
 
         # Connect with selected settings
@@ -1780,25 +1869,46 @@ class ModemDiagnosticTool:
         results = diag.run_full_diagnostic()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"/mnt/user-data/outputs/modem_diagnostic_{timestamp}.txt"
 
-        with open(filename, 'w') as f:
-            f.write("=" * 70 + "\n")
-            f.write("CELLULAR MODEM DIAGNOSTIC REPORT\n")
-            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write("=" * 70 + "\n\n")
+        # Cross-platform path handling
+        if IS_WINDOWS:
+            # Use current directory or Documents folder on Windows
+            output_dir = os.path.join(os.path.expanduser("~"), "Documents", "modemo_reports")
+        else:
+            # Try to use /mnt/user-data/outputs on Linux, fallback to home directory
+            output_dir = "/mnt/user-data/outputs" if os.path.exists("/mnt/user-data/outputs") else os.path.join(
+                os.path.expanduser("~"), "modemo_reports")
 
-            for result in results:
-                f.write(f"\nCommand: {result.command}\n")
-                f.write(f"Timestamp: {result.timestamp}\n")
-                f.write(f"Success: {result.success}\n")
-                if result.error:
-                    f.write(f"Error: {result.error}\n")
-                f.write(f"\nRaw Response:\n{result.raw_response}\n")
-                f.write(f"\nParsed Data:\n{json.dumps(result.parsed_data, indent=2)}\n")
-                f.write("-" * 70 + "\n")
+        # Create directory if it doesn't exist
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except Exception as e:
+            console.print(f"[yellow]⚠ Could not create output directory: {e}[/yellow]")
+            output_dir = os.getcwd()  # Fallback to current directory
 
-        console.print(f"[green]✓ Report saved to: {filename}[/green]")
+        filename = os.path.join(output_dir, f"modem_diagnostic_{timestamp}.txt")
+
+        try:
+            with open(filename, 'w') as f:
+                f.write("=" * 70 + "\n")
+                f.write("CELLULAR MODEM DIAGNOSTIC REPORT\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 70 + "\n\n")
+
+                for result in results:
+                    f.write(f"\nCommand: {result.command}\n")
+                    f.write(f"Timestamp: {result.timestamp}\n")
+                    f.write(f"Success: {result.success}\n")
+                    if result.error:
+                        f.write(f"Error: {result.error}\n")
+                    f.write(f"\nRaw Response:\n{result.raw_response}\n")
+                    f.write(f"\nParsed Data:\n{json.dumps(result.parsed_data, indent=2)}\n")
+                    f.write("-" * 70 + "\n")
+
+            console.print(f"[green]✓ Report saved to: {filename}[/green]")
+        except Exception as e:
+            console.print(f"[red]✗ Failed to save report: {e}[/red]")
+
         Prompt.ask("\nPress Enter to continue")
 
     def run(self):
