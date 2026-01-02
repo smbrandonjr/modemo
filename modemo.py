@@ -1599,6 +1599,11 @@ class ModemDiagnosticTool:
                     if DEBUG_MODE:
                         console.print(f"[bold green]<<< SUCCESS: {port_path} works![/bold green]\n")
                     time.sleep(0.3)  # Brief pause to show success message
+
+                    # Early exit: If we found a working port, stop testing to avoid hangs on problematic ports
+                    if DEBUG_MODE:
+                        console.print(f"[bold green]Found working port, stopping scan to avoid testing problematic ports[/bold green]")
+                    break  # Exit the loop, we found what we need
                 elif error and "Timeout" in error:
                     progress.update(task, description=f"[yellow]⏱ {port_path} - Timeout (skipping)")
                     if DEBUG_MODE:
