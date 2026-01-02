@@ -40,6 +40,10 @@ console = Console()
 IS_WINDOWS = platform.system() == 'Windows'
 IS_LINUX = platform.system() == 'Linux'
 
+# Port blacklist - can be set via environment variable
+# Example: export MODEMO_SKIP_PORTS="/dev/ttyUSB1,/dev/ttyUSB0"
+SKIP_PORTS = set(os.environ.get('MODEMO_SKIP_PORTS', '').split(',')) if os.environ.get('MODEMO_SKIP_PORTS') else set()
+
 
 class ModemManagerHelper:
     """Helper to detect and manage ModemManager interference on Linux"""
@@ -1375,6 +1379,10 @@ class ModemDiagnosticTool:
             baudrate: Baud rate to test
             quick_test: If True, use faster timeout for initial screening
         """
+        # Check blacklist first
+        if port in SKIP_PORTS:
+            return False, "Port in skip list (MODEMO_SKIP_PORTS)"
+
         # Pre-flight checks on Linux to avoid kernel-level blocking
         if IS_LINUX:
             # Check if port exists and is accessible
@@ -1390,6 +1398,21 @@ class ModemDiagnosticTool:
             lock_file = f"/var/lock/LCK..{os.path.basename(port)}"
             if os.path.exists(lock_file):
                 return False, "Port locked by another process"
+
+            # CRITICAL: Try to open port in non-blocking mode first to detect kernel-level blocks
+            # This is the most aggressive check to prevent hangs
+            try:
+                import fcntl
+                # Try to open with O_NONBLOCK to avoid blocking on open()
+                fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+
+                # If we got here, port can be opened. Close it immediately
+                os.close(fd)
+            except OSError as e:
+                # Port is blocked at kernel level or has issues
+                return False, f"Port unavailable ({e.errno}: {e.strerror})"
+            except Exception as e:
+                return False, f"Port test failed: {str(e)}"
 
         # Use a threading approach with timeout to prevent hangs
         result_container = {'success': False, 'error': 'Timeout'}
