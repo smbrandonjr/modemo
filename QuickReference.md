@@ -92,14 +92,14 @@ Main Menu → Network Tools (3)
    - Verify your carrier is visible
    - Note if status shows "Forbidden"
 
-2. Clear FPLMN List (2)
+2. Clear Forbidden Network List (4)
    - Choose Yes to proceed
    - This removes forbidden network blocks
 
-3. Force Network Registration (4)
+3. Force Network Registration (2)
    - Try Automatic (0) first
    - If fails, use Manual (1) with carrier code
-   
+
 4. Return to Main Menu
    - Run Quick Status Check (2)
    - Verify registration successful
@@ -119,29 +119,29 @@ Main Menu → Network Tools (3)
 **Step-by-step fix**:
 
 ```
-Main Menu → Data Connection Tools (4)
+Main Menu → APN & Data Connection (4)
 
-1. Check PDP Context Status (1)
+1. Check PDP Context Status (2)
    - Verify APN is configured
    - Common APNs:
      • Hologram: "hologram"
      • AT&T: "broadband" or "phone"
      • T-Mobile: "fast.t-mobile.com"
 
-2. Check Data Connection (2)
+2. Check Data Connection (3)
    - Review all three checks:
      ✓ GPRS Attach
      ✓ PDP Context Active
      ✓ IP Address Assigned
-   
+
 3. If context inactive:
-   - Activate PDP Context (3)
+   - Activate PDP Context (4)
    - Enter CID (usually 1)
-   
-4. If no IP address:
-   - Go to Main Menu → Network Tools (3)
-   - Configure APN (3)
-   - Set correct APN for your carrier
+
+4. If no IP address or wrong APN:
+   - Configure APN (1)
+   - Choose carrier preset or enter custom APN
+   - Optionally activate immediately
    - Return and recheck data connection
 ```
 
@@ -154,15 +154,15 @@ Main Menu → Data Connection Tools (4)
 **Solutions**:
 
 ```
-Main Menu → Manual AT Command (5)
+Main Menu → Advanced Tools (5) → Manual AT Command (2)
 
 1. Check status:
    AT+CPIN?
-   
+
 2. If shows "SIM PIN", unlock with:
    AT+CPIN="1234"
    (Replace 1234 with your PIN)
-   
+
 3. Verify:
    AT+CPIN?
    Should show: +CPIN: READY
@@ -428,6 +428,52 @@ If modem is completely unresponsive:
 - 2 = Not registered, currently searching
 - 3 = Registration rejected
 - 5 = Connected, roaming ✓
+
+---
+
+## 🧪 Testing & Validating Data Usage
+
+### NEW: Data Transfer Test
+
+Want to validate your cellular provider's billing? Test it!
+
+```
+Main Menu → APN & Data Connection (4) → Test Data Transfer (7)
+
+1. Choose test size:
+   - 1 KB, 10 KB, 100 KB, 1 MB, or custom
+
+2. Review overhead estimate:
+   - Payload: Your actual data
+   - TCP/IP Headers: ~40 bytes per packet
+   - TLS Handshake: ~3 KB for HTTPS
+   - DNS Lookup: ~80 bytes
+   - HTTP Headers: ~400 bytes
+
+3. Note TOTAL ESTIMATED usage
+
+4. Confirm to send
+
+5. Wait 1-2 minutes
+
+6. Check Hologram Dashboard:
+   https://dashboard.hologram.io
+   → Your Device → Data Usage
+
+7. Verify increase matches estimate
+```
+
+**What You'll See on Dashboard:**
+- Total aggregated data (NOT broken down)
+- 1 KB payload = ~4.5 KB total billed
+- 10 KB payload = ~14 KB total billed
+- 100 KB payload = ~105 KB total billed
+
+**Tips:**
+- Disable WiFi or configure routing for cellular
+- Dashboard updates take 1-2 minutes
+- Actual may vary ±10% due to network conditions
+- Uses real data (costs apply)
 
 ---
 

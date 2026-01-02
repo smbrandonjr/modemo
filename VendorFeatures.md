@@ -84,7 +84,7 @@ Vendor-specific responses are parsed into human-readable format:
 
 ### Accessing Vendor Tools
 
-**Main Menu → Option 5: Vendor-Specific Tools**
+**Main Menu → Advanced Tools (5) → Vendor-Specific Tools (3)**
 
 If modem is detected, you'll see manufacturer-specific options.
 
@@ -302,7 +302,7 @@ Advanced Cell Information (Quectel)
 ### Example 2: Checking Temperature
 
 ```
-Main Menu → Vendor-Specific Tools (5)
+Main Menu → Advanced Tools (5) → Vendor-Specific Tools (3)
 → Quectel Advanced Tools
 → Check Temperature (3)
 
@@ -319,7 +319,7 @@ Result:
 ### Example 3: Neighbor Cell Analysis
 
 ```
-Main Menu → Vendor-Specific Tools (5)
+Main Menu → Advanced Tools (5) → Vendor-Specific Tools (3)
 → View Neighboring Cells (4)
 → Scanning... (10 seconds)
 
@@ -366,7 +366,7 @@ def yourvendor_tools_menu(self):
 
 **Check:**
 ```
-Main Menu → Manual AT Command (6)
+Main Menu → Advanced Tools (5) → Manual AT Command (2)
 → AT+CGMI
 → AT+CGMM
 ```

@@ -20,15 +20,25 @@ A comprehensive cross-platform terminal application for configuring, diagnosing,
 
 ### 🌐 Network Tools
 - **Network Scanner**: Discover all available cellular networks in range
-- **FPLMN Management**: Clear forbidden network list to resolve registration issues
-- **APN Configuration**: Easy setup and modification of APN settings
+- **FPLMN Management**: View and clear forbidden network list to resolve registration issues
 - **Force Registration**: Manual network selection and registration
 
-### 📊 Data Connection Tools
-- **PDP Context Management**: View, activate, and deactivate data contexts
+### 📊 APN & Data Connection
+- **APN Configuration**: Easy setup with carrier presets (Hologram, T-Mobile, AT&T, Verizon)
+- **PDP Context Management**: View, create, activate, deactivate, and delete data contexts
 - **Connection Verification**: Comprehensive data connection health checks
 - **IP Address Assignment**: Monitor IP address allocation
+- **Data Transfer Testing**: Send test data and validate against provider dashboard billing
+  - Accurate overhead calculation (TCP/IP headers, TLS handshake, DNS, HTTP headers)
+  - Clear expectations for Hologram dashboard validation
+  - Multiple test sizes (1KB, 10KB, 100KB, 1MB, custom)
+  - Cellular interface detection
 - **Troubleshooting Guides**: Built-in tips for common issues
+
+### 🔧 Advanced Tools
+- **Common AT Commands**: Quick access to 18 pre-configured useful commands with descriptions
+- **Manual AT Command Interface**: Send custom AT commands with parsed responses
+- **Vendor-Specific Tools**: Specialized features for Quectel, Sierra Wireless, and u-blox modems
 
 ### 🛠️ Advanced Features
 - **Optimized Auto-detection**: Two-phase port scanning for faster modem discovery
@@ -67,7 +77,7 @@ pip3 install -r requirements.txt
 
 Or install manually:
 ```bash
-pip3 install rich pyserial
+pip3 install rich pyserial requests
 ```
 
 3. **Make the script executable (Linux/Mac only)**
@@ -206,36 +216,38 @@ Automatically selecting:
 
 3. Network Tools
    - Scan available networks
+   - Force network registration
    - View FPLMN (forbidden networks list)
    - Clear FPLMN (forbidden networks list)
-   - **Configure APN with presets** (Hologram, T-Mobile, AT&T, Verizon)
-   - Force network registration
 
-4. Data Connection Tools
+4. APN & Data Connection
+   - Configure APN with carrier presets (Hologram, T-Mobile, AT&T, Verizon)
    - Check PDP context status
-   - Verify data connection
-   - Activate/deactivate PDP contexts
+   - Check data connection
+   - Activate PDP context
+   - Deactivate PDP context
+   - Delete PDP context
+   - Test Data Transfer (NEW!)
+     • Send controlled test data (1KB, 10KB, 100KB, 1MB, custom)
+     • Calculate overhead (headers, TLS, DNS)
+     • Validate against Hologram dashboard
+     • Detect cellular interfaces
 
-5. Common AT Commands (NEW!)
-   - 18 pre-configured useful commands
-   - Clear descriptions of what each does
-   - Automatic parsing and formatting
-   - Quick access to signal, registration, SIM, and network info
+5. Advanced Tools
+   Submenu with:
+   - Common AT Commands: 18 pre-configured commands with descriptions
+   - Manual AT Command: Send custom AT commands with parsed responses
+   - Vendor-Specific Tools: Quectel, Sierra Wireless, u-blox features
+     • Quectel: Advanced cell info, temperature, neighbor cells, GPS, eSIM
+     • Sierra Wireless: Status information
+     • u-blox: Cell information
 
-6. Vendor-Specific Tools
-   - Quectel: Advanced cell info, temperature, neighbor cells, GPS status, eSIM support
-   - Sierra Wireless: Status information
-   - u-blox: Cell information
-
-7. Manual AT Command
-   - Send custom AT commands
-   - View raw and parsed responses
-
-8. Reconnect Modem
-   - Change connection settings
+6. Change Connection/Port
+   - Reconnect to modem
    - Switch to different serial port
+   - Change baud rate
 
-9. Export Diagnostic Report
+7. Export Diagnostic Report
    - Generate detailed report file
    - Save all diagnostic results
    - Cross-platform save locations
@@ -260,21 +272,57 @@ Automatically selecting:
 
 ### Configuring APN for Data Connection
 
-1. Go to **Network Tools** (Option 3)
-2. Select **Configure APN** (Option 3)
-3. Enter context ID (usually 1)
-4. Enter PDP type (IP for most cases)
-5. Enter APN name (e.g., "hologram" for Hologram SIM)
-6. Verify configuration
+1. Go to **APN & Data Connection** (Option 4)
+2. Select **Configure APN** (Option 1)
+3. Choose from carrier presets or enter custom APN:
+   - Hologram: `hologram`
+   - T-Mobile: `fast.t-mobile.com`
+   - AT&T: `broadband`
+   - Verizon: `vzwinternet`
+   - Custom: Enter your own
+4. Optionally activate PDP context immediately
+5. Verify configuration
 
 ### Checking Data Connection
 
-1. Go to **Data Connection Tools** (Option 4)
-2. Select **Check Data Connection** (Option 2)
+1. Go to **APN & Data Connection** (Option 4)
+2. Select **Check Data Connection** (Option 3)
 3. Review:
    - GPRS attach status (should be attached)
    - PDP context activation (should be active)
    - IP address assignment (should have valid IP)
+
+### Testing Data Transfer & Validating Provider Billing
+
+**NEW in v1.3**: Validate your cellular data usage against your provider's dashboard!
+
+1. Go to **APN & Data Connection** (Option 4)
+2. Select **Test Data Transfer** (Option 7)
+3. Choose test size (1KB, 10KB, 100KB, 1MB, or custom)
+4. Review the overhead breakdown:
+   - Your payload (actual data)
+   - TCP/IP headers (~40 bytes per packet)
+   - TLS handshake (~3KB for HTTPS)
+   - DNS lookup (~80 bytes)
+   - HTTP headers (~400 bytes)
+5. Note the **total estimated** data usage
+6. Confirm to send test data
+7. Wait 1-2 minutes for dashboard update
+8. Login to your provider dashboard (e.g., https://dashboard.hologram.io)
+9. Verify the data usage increase matches the estimate
+
+**What You'll See:**
+- Provider dashboards show **total aggregated data**
+- NOT broken down by type (headers, payload, etc.)
+- For 1KB payload: expect ~4.5KB total (due to overhead)
+- For 10KB payload: expect ~14KB total
+- For 100KB payload: expect ~105KB total
+
+**Important Notes:**
+- Uses real cellular data (costs apply)
+- Ensure WiFi is disabled or routing is configured
+- Dashboard updates may take 1-2 minutes
+- Actual usage may vary ±10% due to network conditions
 
 ### Finding Zero-Byte Sessions
 
@@ -500,7 +548,7 @@ Useful if certain ports consistently cause hangs or are known to not be modem AT
 
 ### Common AT Commands Menu
 
-The new "Common AT Commands" menu (Option 5) provides quick access to 18 frequently-used commands:
+The "Common AT Commands" menu (Main Menu → Advanced Tools → Option 1) provides quick access to 18 frequently-used commands:
 
 - **Signal & Registration**: Check signal quality, network status, operator info
 - **SIM Information**: View IMSI, ICCID, SIM status
@@ -633,6 +681,20 @@ The optimized two-phase auto-detection provides significant speed improvements:
 - Skips unlikely ports in Phase 1
 
 ## Version History
+
+**v1.3** - Menu Reorganization & Data Transfer Testing
+- **Data Transfer Testing** - Send controlled test data and validate against provider dashboard
+  - Accurate overhead calculation (TCP/IP, TLS, DNS, HTTP headers)
+  - Support for multiple test sizes (1KB to 1MB)
+  - Clear expectations for Hologram dashboard validation
+  - Cellular interface detection
+  - Step-by-step validation instructions
+- **Reorganized menu structure** - Simplified from 9 to 7 main options for better clarity
+- **New "APN & Data Connection" menu** - Consolidated APN config and PDP management
+- **New "Advanced Tools" submenu** - Groups Common AT Commands, Manual AT, and Vendor Tools
+- **Delete PDP Context** - New feature to remove unwanted APN configurations
+- **Improved menu naming** - Clearer labels like "Change Connection/Port"
+- **Better workflow** - Menu order follows natural troubleshooting flow
 
 **v1.2** - UX & Reliability Update
 - **Common AT Commands menu** - 18 pre-configured commands with descriptions

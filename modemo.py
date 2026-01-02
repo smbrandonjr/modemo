@@ -19,6 +19,8 @@ import subprocess
 import platform
 import os
 import threading
+import socket
+import struct
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +30,13 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.live import Live
 from rich.prompt import Prompt, Confirm
+
+# Optional import for advanced HTTP requests
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 from rich.tree import Tree
 from rich.text import Text
 from rich import box
@@ -1206,6 +1215,239 @@ class NetworkTools:
             console.print(f"Status: {reg_result.parsed_data['creg_status_text']}")
 
 
+class DataTransferTest:
+    """Tools for testing cellular data transfer and validating provider billing"""
+
+    def __init__(self, modem: ModemConnection):
+        self.modem = modem
+
+    def get_cellular_interfaces(self) -> List[Dict[str, str]]:
+        """Detect available cellular network interfaces"""
+        interfaces = []
+
+        try:
+            if IS_LINUX:
+                # Get all network interfaces
+                result = subprocess.run(['ip', 'link', 'show'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    # Look for common cellular interface patterns
+                    patterns = [r'wwan\d+', r'ppp\d+', r'usb\d+', r'wwp\d+s\d+']
+                    for line in result.stdout.split('\n'):
+                        for pattern in patterns:
+                            match = re.search(r'\d+:\s+(' + pattern + r'):', line)
+                            if match:
+                                iface_name = match.group(1)
+                                # Get IP address for this interface
+                                ip_result = subprocess.run(['ip', 'addr', 'show', iface_name],
+                                                          capture_output=True, text=True, timeout=5)
+                                ip_addr = None
+                                if ip_result.returncode == 0:
+                                    ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', ip_result.stdout)
+                                    if ip_match:
+                                        ip_addr = ip_match.group(1)
+
+                                # Check if interface is UP
+                                is_up = 'UP' in line and 'state UP' in line
+
+                                interfaces.append({
+                                    'name': iface_name,
+                                    'ip': ip_addr or 'No IP assigned',
+                                    'status': 'UP' if is_up else 'DOWN'
+                                })
+            elif IS_WINDOWS:
+                # Windows - look for cellular adapters
+                result = subprocess.run(['netsh', 'interface', 'show', 'interface'],
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    for line in result.stdout.split('\n'):
+                        if any(keyword in line.lower() for keyword in ['mobile', 'cellular', 'wwan', 'lte']):
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                iface_name = ' '.join(parts[3:])
+                                interfaces.append({
+                                    'name': iface_name,
+                                    'ip': 'Use ipconfig to check',
+                                    'status': parts[1]
+                                })
+        except Exception as e:
+            if DEBUG_MODE:
+                console.print(f"[yellow]Error detecting interfaces: {e}[/yellow]")
+
+        return interfaces
+
+    def calculate_overhead_estimate(self, payload_bytes: int, use_https: bool = True) -> Dict[str, int]:
+        """Calculate estimated overhead for data transfer"""
+        overhead = {
+            'payload': payload_bytes,
+            'tcp_ip_headers': 0,
+            'tls_handshake': 0,
+            'dns_lookup': 0,
+            'http_headers': 0,
+        }
+
+        # Estimate number of TCP packets (MTU ~1500, MSS ~1460)
+        mss = 1460
+        num_packets = max(1, (payload_bytes + mss - 1) // mss)
+
+        # TCP/IP overhead (20 bytes TCP + 20 bytes IP per packet)
+        overhead['tcp_ip_headers'] = num_packets * 40
+
+        # Add SYN, SYN-ACK, ACK handshake
+        overhead['tcp_ip_headers'] += 3 * 40  # 3-way handshake
+
+        # Add FIN handshake
+        overhead['tcp_ip_headers'] += 2 * 40  # FIN + ACK
+
+        if use_https:
+            # TLS 1.2/1.3 handshake (conservative estimate)
+            overhead['tls_handshake'] = 3000  # ~3KB for handshake
+
+            # DNS lookup for domain
+            overhead['dns_lookup'] = 80  # Query + response
+
+            # HTTPS headers (conservative estimate)
+            overhead['http_headers'] = 400  # Request + response headers
+        else:
+            # DNS lookup
+            overhead['dns_lookup'] = 80
+
+            # HTTP headers
+            overhead['http_headers'] = 300
+
+        # Total
+        overhead['total_estimated'] = sum(overhead.values())
+        overhead['overhead_percentage'] = int((overhead['total_estimated'] - payload_bytes) / payload_bytes * 100) if payload_bytes > 0 else 0
+
+        return overhead
+
+    def send_test_data(self, size_bytes: int, interface_name: Optional[str] = None) -> Dict:
+        """Send test data over cellular connection"""
+        result = {
+            'success': False,
+            'payload_size': size_bytes,
+            'error': None,
+            'interface_used': interface_name or 'default route',
+        }
+
+        if not HAS_REQUESTS:
+            # Fallback to curl if requests not available
+            try:
+                # Generate test data
+                test_data = b'X' * size_bytes
+
+                cmd = ['curl', '-X', 'POST', 'https://httpbin.org/post',
+                       '-H', 'Content-Type: application/octet-stream',
+                       '--data-binary', '@-',
+                       '-o', '/dev/null',
+                       '-w', '%{size_upload},%{size_download}',
+                       '-s']
+
+                if interface_name and IS_LINUX:
+                    cmd.extend(['--interface', interface_name])
+
+                proc = subprocess.run(cmd, input=test_data, capture_output=True, text=True, timeout=30)
+
+                if proc.returncode == 0:
+                    sizes = proc.stdout.strip().split(',')
+                    result['success'] = True
+                    result['bytes_uploaded'] = int(sizes[0]) if len(sizes) > 0 else size_bytes
+                    result['bytes_downloaded'] = int(sizes[1]) if len(sizes) > 1 else 0
+                else:
+                    result['error'] = f"curl failed: {proc.stderr}"
+            except Exception as e:
+                result['error'] = str(e)
+        else:
+            # Use requests library
+            try:
+                test_data = b'X' * size_bytes
+
+                # Create session
+                session = requests.Session()
+
+                # Note: Interface binding requires additional setup on Windows
+                # For now, we rely on system routing
+
+                response = session.post('https://httpbin.org/post',
+                                       data=test_data,
+                                       headers={'Content-Type': 'application/octet-stream'},
+                                       timeout=30)
+
+                result['success'] = response.status_code == 200
+                result['bytes_uploaded'] = len(test_data)
+                result['bytes_downloaded'] = len(response.content)
+                result['http_status'] = response.status_code
+
+            except Exception as e:
+                result['error'] = str(e)
+
+        return result
+
+    def display_test_instructions(self, size_bytes: int):
+        """Display instructions for validating data usage"""
+        overhead = self.calculate_overhead_estimate(size_bytes, use_https=True)
+
+        console.print("\n")
+        console.rule("[bold cyan]Cellular Data Transfer Test", style="cyan")
+        console.print()
+
+        # Overview
+        console.print("[bold yellow]📊 What This Test Does:[/bold yellow]")
+        console.print("  • Sends exactly [cyan]" + f"{size_bytes:,}[/cyan] bytes of test data via HTTPS")
+        console.print("  • Posts to httpbin.org (a public testing service)")
+        console.print("  • Uses your active cellular connection")
+        console.print()
+
+        # Data breakdown
+        console.print("[bold yellow]📦 Expected Data Usage Breakdown:[/bold yellow]")
+        table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+        table.add_column("Component", style="cyan", width=25)
+        table.add_column("Bytes", justify="right", style="white", width=15)
+        table.add_column("Purpose", style="dim")
+
+        table.add_row("Your Payload", f"{overhead['payload']:,}", "Actual data you're sending")
+        table.add_row("TCP/IP Headers", f"{overhead['tcp_ip_headers']:,}", "Protocol overhead for packets")
+        table.add_row("TLS Handshake", f"{overhead['tls_handshake']:,}", "HTTPS encryption setup")
+        table.add_row("DNS Lookup", f"{overhead['dns_lookup']:,}", "Domain name resolution")
+        table.add_row("HTTP Headers", f"{overhead['http_headers']:,}", "Request/response metadata")
+        table.add_row("", "", "")
+        table.add_row("[bold]TOTAL ESTIMATED[/bold]",
+                     f"[bold]{overhead['total_estimated']:,}[/bold]",
+                     f"[bold]+{overhead['overhead_percentage']}% overhead[/bold]")
+
+        console.print(table)
+        console.print()
+
+        # Provider dashboard expectations
+        console.print("[bold yellow]📱 What You'll See on Hologram Dashboard:[/bold yellow]")
+        console.print(f"  • Hologram shows [bold]TOTAL aggregated data usage[/bold]")
+        console.print(f"  • Expected: ~[bold green]{overhead['total_estimated']:,} bytes[/bold green] ({overhead['total_estimated']/1024:.1f} KB)")
+        console.print(f"  • NOT broken down by type (headers, payload, etc.)")
+        console.print(f"  • Dashboard updates may take [yellow]1-2 minutes[/yellow]")
+        console.print()
+
+        # Step-by-step validation
+        console.print("[bold yellow]✅ How to Validate:[/bold yellow]")
+        console.print("  [bold]BEFORE running test:[/bold]")
+        console.print("    1. Login to [cyan]https://dashboard.hologram.io[/cyan]")
+        console.print("    2. Navigate to your device")
+        console.print("    3. Note current [bold]total data usage[/bold] (in bytes)")
+        console.print()
+        console.print("  [bold]AFTER running test:[/bold]")
+        console.print("    4. Wait [yellow]1-2 minutes[/yellow] for dashboard to update")
+        console.print("    5. Refresh the dashboard page")
+        console.print("    6. Check new total data usage")
+        console.print(f"    7. Difference should be ~[bold green]{overhead['total_estimated']:,} bytes[/bold green]")
+        console.print()
+
+        # Important notes
+        console.print("[bold red]⚠️  Important Notes:[/bold red]")
+        console.print("  • This test will use [bold]real cellular data[/bold] (costs apply)")
+        console.print("  • Ensure WiFi is disabled or cellular routing is configured")
+        console.print("  • Background processes may also use data during test")
+        console.print("  • Actual usage may vary ±10% due to network conditions")
+        console.print()
+
+
 class DataUsageTools:
     """Tools for monitoring and troubleshooting data usage"""
 
@@ -1856,13 +2098,11 @@ class ModemDiagnosticTool:
             menu_items = [
                 ("1", "Run Full Diagnostic Test", "Complete system diagnostic"),
                 ("2", "Quick Status Check", "View current status"),
-                ("3", "Network Tools", "Scan, configure, troubleshoot network"),
-                ("4", "Data Connection Tools", "Check and troubleshoot data usage"),
-                ("5", "Common AT Commands", "Quick access to useful commands"),
-                ("6", "Vendor-Specific Tools", "Advanced modem-specific features"),
-                ("7", "Manual AT Command", "Send custom AT commands"),
-                ("8", "Reconnect Modem", "Change connection settings"),
-                ("9", "Export Diagnostic Report", "Save results to file"),
+                ("3", "Network Tools", "Scan, register, troubleshoot network"),
+                ("4", "APN & Data Connection", "Configure APN, manage PDP contexts"),
+                ("5", "Advanced Tools", "AT commands and vendor features"),
+                ("6", "Change Connection/Port", "Reconnect to different port"),
+                ("7", "Export Diagnostic Report", "Save results to file"),
                 ("0", "Exit", "Quit application"),
             ]
 
@@ -1883,16 +2123,12 @@ class ModemDiagnosticTool:
             elif choice == "4":
                 self.data_tools_menu()
             elif choice == "5":
-                self.common_at_commands_menu()
+                self.advanced_tools_menu()
             elif choice == "6":
-                self.vendor_tools_menu()
-            elif choice == "7":
-                self.manual_at_command()
-            elif choice == "8":
                 if self.modem:
                     self.modem.disconnect()
                 self.connect_modem()
-            elif choice == "9":
+            elif choice == "7":
                 self.export_report()
 
     def run_full_diagnostic(self):
@@ -1959,51 +2195,9 @@ class ModemDiagnosticTool:
             console.print()
 
             console.print("  [bold cyan]1[/bold cyan]. Scan Available Networks")
-            console.print("  [bold cyan]2[/bold cyan]. View Forbidden Network List (FPLMN)")
-            console.print("  [bold cyan]3[/bold cyan]. Clear Forbidden Network List (FPLMN)")
-            console.print("  [bold cyan]4[/bold cyan]. Configure APN")
-            console.print("  [bold cyan]5[/bold cyan]. Force Network Registration")
-            console.print("  [bold cyan]0[/bold cyan]. Back to Main Menu")
-            console.print()
-
-            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4", "5"], default="1")
-
-            if choice == "0":
-                break
-            elif choice == "1":
-                tools.scan_networks()
-                Prompt.ask("\nPress Enter to continue")
-            elif choice == "2":
-                tools.view_fplmn()
-                Prompt.ask("\nPress Enter to continue")
-            elif choice == "3":
-                tools.clear_fplmn()
-                Prompt.ask("\nPress Enter to continue")
-            elif choice == "4":
-                tools.configure_apn()
-                Prompt.ask("\nPress Enter to continue")
-            elif choice == "5":
-                tools.force_network_registration()
-                Prompt.ask("\nPress Enter to continue")
-
-    def data_tools_menu(self):
-        """Data connection tools submenu"""
-        if not self.connected:
-            console.print("[red]Not connected to modem. Please connect first.[/red]")
-            time.sleep(2)
-            return
-
-        tools = DataUsageTools(self.modem)
-
-        while True:
-            console.print("\n")
-            console.rule("[bold cyan]Data Connection Tools", style="cyan")
-            console.print()
-
-            console.print("  [bold cyan]1[/bold cyan]. Check PDP Context Status")
-            console.print("  [bold cyan]2[/bold cyan]. Check Data Connection")
-            console.print("  [bold cyan]3[/bold cyan]. Activate PDP Context")
-            console.print("  [bold cyan]4[/bold cyan]. Deactivate PDP Context")
+            console.print("  [bold cyan]2[/bold cyan]. Force Network Registration")
+            console.print("  [bold cyan]3[/bold cyan]. View Forbidden Network List (FPLMN)")
+            console.print("  [bold cyan]4[/bold cyan]. Clear Forbidden Network List (FPLMN)")
             console.print("  [bold cyan]0[/bold cyan]. Back to Main Menu")
             console.print()
 
@@ -2012,12 +2206,57 @@ class ModemDiagnosticTool:
             if choice == "0":
                 break
             elif choice == "1":
-                tools.check_pdp_status()
+                tools.scan_networks()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "2":
-                tools.check_data_connection()
+                tools.force_network_registration()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "3":
+                tools.view_fplmn()
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "4":
+                tools.clear_fplmn()
+                Prompt.ask("\nPress Enter to continue")
+
+    def data_tools_menu(self):
+        """APN & Data connection tools submenu"""
+        if not self.connected:
+            console.print("[red]Not connected to modem. Please connect first.[/red]")
+            time.sleep(2)
+            return
+
+        tools = DataUsageTools(self.modem)
+        network_tools = NetworkTools(self.modem)
+
+        while True:
+            console.print("\n")
+            console.rule("[bold cyan]APN & Data Connection", style="cyan")
+            console.print()
+
+            console.print("  [bold cyan]1[/bold cyan]. Configure APN")
+            console.print("  [bold cyan]2[/bold cyan]. Check PDP Context Status")
+            console.print("  [bold cyan]3[/bold cyan]. Check Data Connection")
+            console.print("  [bold cyan]4[/bold cyan]. Activate PDP Context")
+            console.print("  [bold cyan]5[/bold cyan]. Deactivate PDP Context")
+            console.print("  [bold cyan]6[/bold cyan]. Delete PDP Context")
+            console.print("  [bold cyan]7[/bold cyan]. Test Data Transfer")
+            console.print("  [bold cyan]0[/bold cyan]. Back to Main Menu")
+            console.print()
+
+            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4", "5", "6", "7"], default="1")
+
+            if choice == "0":
+                break
+            elif choice == "1":
+                network_tools.configure_apn()
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "2":
+                tools.check_pdp_status()
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "3":
+                tools.check_data_connection()
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "4":
                 cid = Prompt.ask("Enter CID to activate", default="1")
                 result = self.modem.send_at_command(f"AT+CGACT=1,{cid}")
                 if result.success:
@@ -2025,13 +2264,205 @@ class ModemDiagnosticTool:
                 else:
                     console.print(f"[red]✗ Activation failed: {result.error}[/red]")
                 Prompt.ask("\nPress Enter to continue")
-            elif choice == "4":
+            elif choice == "5":
                 cid = Prompt.ask("Enter CID to deactivate", default="1")
                 result = self.modem.send_at_command(f"AT+CGACT=0,{cid}")
                 if result.success:
                     console.print("[green]✓ PDP context deactivated[/green]")
                 else:
                     console.print(f"[red]✗ Deactivation failed: {result.error}[/red]")
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "6":
+                # Show current contexts first
+                console.print("\n[bold cyan]Current PDP Contexts:[/bold cyan]\n")
+                result = self.modem.send_at_command("AT+CGDCONT?")
+
+                if 'contexts' in result.parsed_data and result.parsed_data['contexts']:
+                    table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+                    table.add_column("CID", style="cyan", width=8)
+                    table.add_column("PDP Type", style="white", width=12)
+                    table.add_column("APN", style="white")
+
+                    for ctx in result.parsed_data['contexts']:
+                        table.add_row(str(ctx['cid']), ctx['pdp_type'], ctx['apn'])
+
+                    console.print(table)
+                    console.print()
+
+                    cid = Prompt.ask("Enter CID to delete (or 'cancel' to abort)")
+
+                    if cid.lower() != 'cancel':
+                        # Confirm deletion
+                        if Confirm.ask(f"[yellow]⚠ Are you sure you want to delete PDP context {cid}?[/yellow]", default=False):
+                            # Delete by setting to empty
+                            delete_result = self.modem.send_at_command(f"AT+CGDCONT={cid}")
+                            if delete_result.success:
+                                console.print(f"[green]✓ PDP context {cid} deleted successfully[/green]")
+
+                                # Verify deletion
+                                verify_result = self.modem.send_at_command("AT+CGDCONT?")
+                                if 'contexts' in verify_result.parsed_data:
+                                    remaining = [ctx for ctx in verify_result.parsed_data['contexts'] if str(ctx['cid']) != cid]
+                                    if remaining:
+                                        console.print("\n[cyan]Remaining PDP Contexts:[/cyan]")
+                                        for ctx in remaining:
+                                            console.print(f"  CID {ctx['cid']}: {ctx['pdp_type']}, APN: {ctx['apn']}")
+                                    else:
+                                        console.print("\n[yellow]No PDP contexts remain[/yellow]")
+                            else:
+                                console.print(f"[red]✗ Deletion failed: {delete_result.error}[/red]")
+                        else:
+                            console.print("[yellow]Deletion cancelled[/yellow]")
+                else:
+                    console.print("[yellow]No PDP contexts found[/yellow]")
+
+                Prompt.ask("\nPress Enter to continue")
+            elif choice == "7":
+                self.data_transfer_test_menu()
+
+    def data_transfer_test_menu(self):
+        """Test cellular data transfer and validate provider billing"""
+        if not self.connected:
+            console.print("[red]Not connected to modem. Please connect first.[/red]")
+            time.sleep(2)
+            return
+
+        transfer_test = DataTransferTest(self.modem)
+
+        while True:
+            console.print("\n")
+            console.rule("[bold cyan]Cellular Data Transfer Test", style="cyan")
+            console.print()
+
+            console.print("  [bold cyan]1[/bold cyan]. Send 1 KB test data")
+            console.print("  [bold cyan]2[/bold cyan]. Send 10 KB test data")
+            console.print("  [bold cyan]3[/bold cyan]. Send 100 KB test data")
+            console.print("  [bold cyan]4[/bold cyan]. Send 1 MB test data")
+            console.print("  [bold cyan]5[/bold cyan]. Send custom size")
+            console.print("  [bold cyan]6[/bold cyan]. Detect cellular interfaces")
+            console.print("  [bold cyan]0[/bold cyan]. Back to APN & Data Connection Menu")
+            console.print()
+
+            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4", "5", "6"], default="1")
+
+            if choice == "0":
+                break
+            elif choice == "6":
+                # Detect interfaces
+                console.print("\n[bold cyan]Detecting Cellular Interfaces...[/bold cyan]\n")
+                interfaces = transfer_test.get_cellular_interfaces()
+
+                if interfaces:
+                    table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+                    table.add_column("Interface", style="cyan", width=15)
+                    table.add_column("IP Address", style="white", width=20)
+                    table.add_column("Status", style="white", width=10)
+
+                    for iface in interfaces:
+                        status_color = "green" if iface['status'] == 'UP' else "red"
+                        table.add_row(
+                            iface['name'],
+                            iface['ip'],
+                            f"[{status_color}]{iface['status']}[/{status_color}]"
+                        )
+
+                    console.print(table)
+                    console.print()
+                    console.print("[dim]Note: Data will be sent via system's default route unless you configure routing manually[/dim]")
+                else:
+                    console.print("[yellow]No cellular interfaces detected[/yellow]")
+                    console.print("[dim]Tip: Ensure your cellular modem is connected and has an active PDP context[/dim]")
+
+                Prompt.ask("\nPress Enter to continue")
+            else:
+                # Determine test size
+                size_map = {
+                    "1": 1024,           # 1 KB
+                    "2": 10240,          # 10 KB
+                    "3": 102400,         # 100 KB
+                    "4": 1048576,        # 1 MB
+                }
+
+                if choice == "5":
+                    size_input = Prompt.ask("Enter size in bytes", default="1024")
+                    try:
+                        test_size = int(size_input)
+                        if test_size <= 0 or test_size > 10485760:  # Max 10 MB
+                            console.print("[red]Size must be between 1 and 10,485,760 bytes (10 MB)[/red]")
+                            Prompt.ask("\nPress Enter to continue")
+                            continue
+                    except ValueError:
+                        console.print("[red]Invalid size. Please enter a number.[/red]")
+                        Prompt.ask("\nPress Enter to continue")
+                        continue
+                else:
+                    test_size = size_map[choice]
+
+                # Display instructions
+                transfer_test.display_test_instructions(test_size)
+
+                # Confirm before sending
+                if not Confirm.ask(f"\n[yellow]⚠️  Send {test_size:,} bytes of test data? (This will use real cellular data)[/yellow]", default=False):
+                    console.print("[yellow]Test cancelled[/yellow]")
+                    Prompt.ask("\nPress Enter to continue")
+                    continue
+
+                # Detect interface (optional)
+                interfaces = transfer_test.get_cellular_interfaces()
+                interface_name = None
+                if interfaces and IS_LINUX:
+                    # Use first UP interface if available
+                    for iface in interfaces:
+                        if iface['status'] == 'UP' and iface['ip'] != 'No IP assigned':
+                            interface_name = iface['name']
+                            break
+
+                # Send test data
+                console.print("\n[cyan]Sending test data...[/cyan]")
+                with console.status("[bold cyan]Transferring data via cellular..."):
+                    result = transfer_test.send_test_data(test_size, interface_name)
+
+                # Display results
+                console.print("\n")
+                if result['success']:
+                    console.print("[bold green]✓ Test completed successfully![/bold green]\n")
+
+                    overhead = transfer_test.calculate_overhead_estimate(test_size, use_https=True)
+
+                    # Results table
+                    table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta", title="Transfer Results")
+                    table.add_column("Metric", style="cyan", width=30)
+                    table.add_column("Value", style="white", width=20)
+
+                    table.add_row("Payload Sent", f"{result['payload_size']:,} bytes")
+                    if 'bytes_uploaded' in result:
+                        table.add_row("Bytes Uploaded", f"{result.get('bytes_uploaded', 0):,} bytes")
+                    if 'bytes_downloaded' in result:
+                        table.add_row("Response Received", f"{result.get('bytes_downloaded', 0):,} bytes")
+                    table.add_row("Interface Used", result['interface_used'])
+                    table.add_row("", "")
+                    table.add_row("[bold]Expected on Dashboard[/bold]", f"[bold green]~{overhead['total_estimated']:,} bytes[/bold green]")
+                    table.add_row("[bold]Wait Time[/bold]", "[bold yellow]1-2 minutes[/bold yellow]")
+
+                    console.print(table)
+                    console.print()
+
+                    console.print("[bold yellow]📱 Next Steps:[/bold yellow]")
+                    console.print("  1. Wait [yellow]1-2 minutes[/yellow] for Hologram dashboard to update")
+                    console.print("  2. Login: [cyan]https://dashboard.hologram.io[/cyan]")
+                    console.print("  3. Check your device's total data usage")
+                    console.print(f"  4. Usage should increase by ~[bold green]{overhead['total_estimated']:,} bytes[/bold green]")
+                    console.print()
+                else:
+                    console.print(f"[bold red]✗ Test failed[/bold red]")
+                    console.print(f"[red]Error: {result.get('error', 'Unknown error')}[/red]")
+                    console.print()
+                    console.print("[yellow]Troubleshooting:[/yellow]")
+                    console.print("  • Check that PDP context is active (option 3)")
+                    console.print("  • Verify cellular interface has IP address (option 6)")
+                    console.print("  • Ensure routing is configured to use cellular")
+                    console.print("  • Try disabling WiFi temporarily")
+
                 Prompt.ask("\nPress Enter to continue")
 
     def common_at_commands_menu(self):
@@ -2133,6 +2564,35 @@ class ModemDiagnosticTool:
                 console.print(json.dumps(result.parsed_data, indent=2))
 
             console.print()
+
+    def advanced_tools_menu(self):
+        """Advanced tools submenu - AT commands and vendor features"""
+        if not self.connected:
+            console.print("[red]Not connected to modem. Please connect first.[/red]")
+            time.sleep(2)
+            return
+
+        while True:
+            console.print("\n")
+            console.rule("[bold cyan]Advanced Tools", style="cyan")
+            console.print()
+
+            console.print("  [bold cyan]1[/bold cyan]. Common AT Commands - Quick access to 18 useful commands")
+            console.print("  [bold cyan]2[/bold cyan]. Manual AT Command - Send custom AT commands")
+            console.print("  [bold cyan]3[/bold cyan]. Vendor-Specific Tools - Quectel, Sierra, u-blox features")
+            console.print("  [bold cyan]0[/bold cyan]. Back to Main Menu")
+            console.print()
+
+            choice = Prompt.ask("Select option", choices=["0", "1", "2", "3"], default="1")
+
+            if choice == "0":
+                break
+            elif choice == "1":
+                self.common_at_commands_menu()
+            elif choice == "2":
+                self.manual_at_command()
+            elif choice == "3":
+                self.vendor_tools_menu()
 
     def vendor_tools_menu(self):
         """Vendor-specific advanced tools"""
