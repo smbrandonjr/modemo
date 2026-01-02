@@ -86,7 +86,8 @@ class ModemConnection:
                     stopbits=serial.STOPBITS_ONE,
                     rtscts=rtscts_setting,
                     xonxoff=False,
-                    dsrdtr=False
+                    dsrdtr=False,
+                    exclusive=False  # Allow shared access to prevent blocking on Linux
                 )
                 time.sleep(init_sleep)
 
@@ -1265,6 +1266,22 @@ class ModemDiagnosticTool:
             baudrate: Baud rate to test
             quick_test: If True, use faster timeout for initial screening
         """
+        # Pre-flight checks on Linux to avoid kernel-level blocking
+        if IS_LINUX:
+            # Check if port exists and is accessible
+            if not os.path.exists(port):
+                return False, "Port does not exist"
+
+            # Check if we have read/write permissions
+            if not os.access(port, os.R_OK | os.W_OK):
+                return False, "Permission denied"
+
+            # Check if port is already locked/in use by checking for lock file
+            # This is a common pattern on Linux
+            lock_file = f"/var/lock/LCK..{os.path.basename(port)}"
+            if os.path.exists(lock_file):
+                return False, "Port locked by another process"
+
         # Use a threading approach with timeout to prevent hangs
         result_container = {'success': False, 'error': 'Timeout'}
 
@@ -1374,6 +1391,12 @@ class ModemDiagnosticTool:
                     })
                     progress.update(task, description=f"[green]✓ {port_path} @ {primary_baudrate} baud - WORKING!")
                     time.sleep(0.3)  # Brief pause to show success message
+                elif error and "Timeout" in error:
+                    progress.update(task, description=f"[yellow]⏱ {port_path} - Timeout (skipping)")
+                    time.sleep(0.2)
+                elif error and "Permission" in error:
+                    progress.update(task, description=f"[red]🔒 {port_path} - {error}")
+                    time.sleep(0.2)
 
                 progress.advance(task)
 
