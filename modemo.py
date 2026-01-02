@@ -1469,17 +1469,32 @@ class ModemDiagnosticTool:
                 result_container['error'] = str(e)
 
         # Create and start thread
+        if DEBUG_MODE:
+            console.print(f"[dim]DEBUG: Starting thread for {port}[/dim]")
         thread = threading.Thread(target=test_thread, daemon=True)
         thread.start()
 
-        # Wait for thread with timeout (2 seconds for quick test, 5 seconds for normal)
-        thread_timeout = 2.5 if quick_test else 6.0
+        # Wait for thread with timeout - VERY aggressive for quick test
+        # If a port doesn't respond in 1 second, it's likely not an AT port
+        thread_timeout = 1.0 if quick_test else 5.0
+        if DEBUG_MODE:
+            console.print(f"[dim]DEBUG: Waiting {thread_timeout}s for thread to complete...[/dim]")
+
+        start_time = time.time()
         thread.join(timeout=thread_timeout)
+        elapsed = time.time() - start_time
+
+        if DEBUG_MODE:
+            console.print(f"[dim]DEBUG: Thread join returned after {elapsed:.2f}s[/dim]")
 
         # If thread is still alive, it timed out
         if thread.is_alive():
+            if DEBUG_MODE:
+                console.print(f"[dim]DEBUG: Thread TIMEOUT after {thread_timeout}s[/dim]")
             return False, f"Timeout ({thread_timeout}s) - port may be unresponsive"
 
+        if DEBUG_MODE:
+            console.print(f"[dim]DEBUG: Thread completed, success={result_container['success']}[/dim]")
         return result_container['success'], result_container['error']
 
     def auto_detect_modem(self) -> Optional[Tuple[str, int]]:
@@ -1565,9 +1580,12 @@ class ModemDiagnosticTool:
         ) as progress:
             task = progress.add_task("[cyan]Scanning ports...", total=len(ports))
 
-            for port in ports:
+            for idx, port in enumerate(ports):
                 port_path = port['path']
-                progress.update(task, description=f"[cyan]Testing {port_path}...")
+                progress.update(task, description=f"[cyan]Testing {port_path}... ({idx+1}/{len(ports)})")
+
+                if DEBUG_MODE:
+                    console.print(f"\n[bold cyan]>>> Testing port {idx+1}/{len(ports)}: {port_path}[/bold cyan]")
 
                 is_working, error = self.test_port_for_modem(port_path, primary_baudrate, quick_test=True)
 
@@ -1578,13 +1596,22 @@ class ModemDiagnosticTool:
                         'info': port
                     })
                     progress.update(task, description=f"[green]✓ {port_path} @ {primary_baudrate} baud - WORKING!")
+                    if DEBUG_MODE:
+                        console.print(f"[bold green]<<< SUCCESS: {port_path} works![/bold green]\n")
                     time.sleep(0.3)  # Brief pause to show success message
                 elif error and "Timeout" in error:
                     progress.update(task, description=f"[yellow]⏱ {port_path} - Timeout (skipping)")
+                    if DEBUG_MODE:
+                        console.print(f"[yellow]<<< TIMEOUT: {port_path} - moving to next port[/yellow]\n")
                     time.sleep(0.2)
                 elif error and "Permission" in error:
                     progress.update(task, description=f"[red]🔒 {port_path} - {error}")
+                    if DEBUG_MODE:
+                        console.print(f"[red]<<< PERMISSION: {port_path} - {error}[/red]\n")
                     time.sleep(0.2)
+                else:
+                    if DEBUG_MODE:
+                        console.print(f"[dim]<<< FAILED: {port_path} - {error}[/dim]\n")
 
                 progress.advance(task)
 
