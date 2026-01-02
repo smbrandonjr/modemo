@@ -44,6 +44,9 @@ IS_LINUX = platform.system() == 'Linux'
 # Example: export MODEMO_SKIP_PORTS="/dev/ttyUSB1,/dev/ttyUSB0"
 SKIP_PORTS = set(os.environ.get('MODEMO_SKIP_PORTS', '').split(',')) if os.environ.get('MODEMO_SKIP_PORTS') else set()
 
+# Debug mode - set MODEMO_DEBUG=1 for verbose output
+DEBUG_MODE = os.environ.get('MODEMO_DEBUG', '').lower() in ('1', 'true', 'yes')
+
 
 class ModemManagerHelper:
     """Helper to detect and manage ModemManager interference on Linux"""
@@ -1346,13 +1349,15 @@ class ModemDiagnosticTool:
                         # Determine port type and priority
                         if 'ttyUSB' in port_path:
                             port_info['type'] = 'USB Serial'
-                            # USB2, USB1, USB0 get higher priority
-                            if 'ttyUSB2' in port_path:
-                                port_info['priority'] = -3
-                            elif 'ttyUSB1' in port_path:
-                                port_info['priority'] = -2
-                            elif 'ttyUSB0' in port_path:
-                                port_info['priority'] = -1
+                            # Extract USB number and prioritize HIGHEST first (USB3 > USB2 > USB1 > USB0)
+                            # Modem AT ports are typically on the highest USB interface
+                            match = re.search(r'ttyUSB(\d+)', port_path)
+                            if match:
+                                usb_num = int(match.group(1))
+                                # Negative priority, higher USB number = lower (better) priority value
+                                port_info['priority'] = -usb_num  # USB3=-3, USB2=-2, USB1=-1, USB0=0
+                            else:
+                                port_info['priority'] = 0
                         elif 'ttyACM' in port_path:
                             port_info['type'] = 'USB CDC-ACM'
                             port_info['priority'] = 10
@@ -1379,28 +1384,44 @@ class ModemDiagnosticTool:
             baudrate: Baud rate to test
             quick_test: If True, use faster timeout for initial screening
         """
+        if DEBUG_MODE:
+            console.print(f"[dim]DEBUG: Starting test for {port} @ {baudrate}[/dim]")
+
         # Check blacklist first
         if port in SKIP_PORTS:
+            if DEBUG_MODE:
+                console.print(f"[dim]DEBUG: {port} in skip list[/dim]")
             return False, "Port in skip list (MODEMO_SKIP_PORTS)"
 
         # Pre-flight checks on Linux to avoid kernel-level blocking
         if IS_LINUX:
+            if DEBUG_MODE:
+                console.print(f"[dim]DEBUG: Running pre-flight checks for {port}[/dim]")
+
             # Check if port exists and is accessible
             if not os.path.exists(port):
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: {port} does not exist[/dim]")
                 return False, "Port does not exist"
 
             # Check if we have read/write permissions
             if not os.access(port, os.R_OK | os.W_OK):
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: {port} permission denied[/dim]")
                 return False, "Permission denied"
 
             # Check if port is already locked/in use by checking for lock file
             # This is a common pattern on Linux
             lock_file = f"/var/lock/LCK..{os.path.basename(port)}"
             if os.path.exists(lock_file):
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: {port} has lock file[/dim]")
                 return False, "Port locked by another process"
 
             # CRITICAL: Try to open port in non-blocking mode first to detect kernel-level blocks
             # This is the most aggressive check to prevent hangs
+            if DEBUG_MODE:
+                console.print(f"[dim]DEBUG: Attempting non-blocking open of {port}[/dim]")
             try:
                 import fcntl
                 # Try to open with O_NONBLOCK to avoid blocking on open()
@@ -1408,10 +1429,16 @@ class ModemDiagnosticTool:
 
                 # If we got here, port can be opened. Close it immediately
                 os.close(fd)
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: Non-blocking open of {port} SUCCESS[/dim]")
             except OSError as e:
                 # Port is blocked at kernel level or has issues
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: {port} OSError: {e.errno} {e.strerror}[/dim]")
                 return False, f"Port unavailable ({e.errno}: {e.strerror})"
             except Exception as e:
+                if DEBUG_MODE:
+                    console.print(f"[dim]DEBUG: {port} Exception: {str(e)}[/dim]")
                 return False, f"Port test failed: {str(e)}"
 
         # Use a threading approach with timeout to prevent hangs
