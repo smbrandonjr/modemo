@@ -18,6 +18,7 @@ import glob
 import subprocess
 import platform
 import os
+import threading
 from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass
 from datetime import datetime
@@ -61,11 +62,19 @@ class ModemConnection:
         self.connection: Optional[serial.Serial] = None
         self.rtscts = None  # Will be auto-detected
 
-    def connect(self) -> bool:
-        """Establish serial connection to modem"""
-        # Try without hardware flow control first (most modems don't use it)
-        # Then try with it if that fails
-        for rtscts_setting in [False, True]:
+    def connect(self, quick_test: bool = False) -> bool:
+        """Establish serial connection to modem
+
+        Args:
+            quick_test: If True, use minimal retries and faster timeouts for detection
+        """
+        # For quick testing, only try one rtscts setting and minimal retries
+        rtscts_settings = [False] if quick_test else [False, True]
+        max_attempts = 1 if quick_test else 3
+        init_sleep = 0.1 if quick_test else 0.5
+        test_sleep = 0.2 if quick_test else 0.5
+
+        for rtscts_setting in rtscts_settings:
             try:
                 self.connection = serial.Serial(
                     port=self.port,
@@ -79,19 +88,20 @@ class ModemConnection:
                     xonxoff=False,
                     dsrdtr=False
                 )
-                time.sleep(0.5)
+                time.sleep(init_sleep)
 
                 # Clear any pending data
                 self.connection.reset_input_buffer()
                 self.connection.reset_output_buffer()
-                time.sleep(0.2)
+                if not quick_test:
+                    time.sleep(0.2)
 
                 # Test with AT command - try multiple times for broken pipe issues
-                for attempt in range(3):
+                for attempt in range(max_attempts):
                     try:
                         self.connection.write(b'AT\r\n')
                         self.connection.flush()
-                        time.sleep(0.5)
+                        time.sleep(test_sleep)
                         response = self.connection.read(self.connection.in_waiting or 100).decode('utf-8',
                                                                                                   errors='ignore')
 
@@ -104,11 +114,13 @@ class ModemConnection:
                             return True
 
                     except (BrokenPipeError, OSError) as e:
-                        if attempt < 2:
+                        if attempt < max_attempts - 1 and not quick_test:
                             time.sleep(0.3)
                             continue
                         else:
-                            raise
+                            if not quick_test:
+                                raise
+                            break
 
                 # No response, try next setting
                 self.connection.close()
@@ -116,8 +128,8 @@ class ModemConnection:
             except Exception as e:
                 if self.connection and self.connection.is_open:
                     self.connection.close()
-                # If this was the last attempt, show error
-                if rtscts_setting == True:
+                # Only show error if not quick test and this was the last attempt
+                if rtscts_setting == rtscts_settings[-1] and not quick_test:
                     console.print(f"[red]Connection Error: {e}[/red]")
                 continue
 
@@ -1246,29 +1258,53 @@ class ModemDiagnosticTool:
         return sorted(ports, key=lambda x: (x.get('priority', 999), x['path']))
 
     def test_port_for_modem(self, port: str, baudrate: int = 115200, quick_test: bool = False) -> Tuple[bool, Optional[str]]:
-        """Test if a port responds to AT commands
+        """Test if a port responds to AT commands with timeout protection
 
         Args:
             port: Serial port path
             baudrate: Baud rate to test
             quick_test: If True, use faster timeout for initial screening
         """
-        try:
-            timeout = 1 if quick_test else 2
-            test_modem = ModemConnection(port=port, baudrate=baudrate, timeout=timeout)
-            if test_modem.connect():
-                # Try AT command
-                result = test_modem.send_at_command("AT", wait_time=0.5 if quick_test else 1.0)
-                test_modem.disconnect()
+        # Use a threading approach with timeout to prevent hangs
+        result_container = {'success': False, 'error': 'Timeout'}
 
-                if result.success:
-                    return True, None
+        def test_thread():
+            try:
+                timeout_val = 0.5 if quick_test else 2
+                test_modem = ModemConnection(port=port, baudrate=baudrate, timeout=timeout_val)
+
+                # Pass quick_test flag to connect method
+                if test_modem.connect(quick_test=quick_test):
+                    # Try AT command
+                    result = test_modem.send_at_command("AT", wait_time=0.3 if quick_test else 1.0)
+                    test_modem.disconnect()
+
+                    if result.success:
+                        result_container['success'] = True
+                        result_container['error'] = None
+                    else:
+                        result_container['success'] = False
+                        result_container['error'] = "No AT response"
                 else:
-                    return False, "No AT response"
-            else:
-                return False, "Cannot open port"
-        except Exception as e:
-            return False, str(e)
+                    result_container['success'] = False
+                    result_container['error'] = "Cannot open port"
+            except Exception as e:
+                result_container['success'] = False
+                result_container['error'] = str(e)
+
+        # Create and start thread
+        thread = threading.Thread(target=test_thread, daemon=True)
+        thread.start()
+
+        # Wait for thread with timeout (2 seconds for quick test, 5 seconds for normal)
+        thread_timeout = 2.5 if quick_test else 6.0
+        thread.join(timeout=thread_timeout)
+
+        # If thread is still alive, it timed out
+        if thread.is_alive():
+            return False, f"Timeout ({thread_timeout}s) - port may be unresponsive"
+
+        return result_container['success'], result_container['error']
 
     def auto_detect_modem(self) -> Optional[Tuple[str, int]]:
         """Automatically detect cellular modem port with optimized two-phase testing"""
