@@ -1087,7 +1087,7 @@ class NetworkTools:
         console.print("[dim]Note: If FPLMN appears empty (FFFFFF...), no networks are currently forbidden.[/dim]")
 
     def configure_apn(self):
-        """Configure APN settings"""
+        """Configure APN settings with common presets"""
         console.print("\n[bold cyan]Configure APN Settings[/bold cyan]\n")
 
         # Get current settings
@@ -1095,14 +1095,43 @@ class NetworkTools:
 
         if 'contexts' in result.parsed_data and result.parsed_data['contexts']:
             console.print("[cyan]Current PDP Contexts:[/cyan]")
+            table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+            table.add_column("CID", style="cyan", width=5)
+            table.add_column("Type", style="white", width=10)
+            table.add_column("APN", style="white", width=30)
+
             for ctx in result.parsed_data['contexts']:
-                console.print(f"  CID {ctx['cid']}: {ctx['pdp_type']}, APN: {ctx['apn']}")
+                table.add_row(str(ctx['cid']), ctx['pdp_type'], ctx['apn'])
+            console.print(table)
             console.print()
 
-        # Get user input
-        cid = Prompt.ask("Enter Context ID (CID)", default="1")
-        pdp_type = Prompt.ask("Enter PDP Type", choices=["IP", "IPV6", "IPV4V6"], default="IP")
-        apn = Prompt.ask("Enter APN name", default="hologram")
+        # Offer common presets
+        console.print("[bold]Quick Setup Options:[/bold]")
+        console.print("  [cyan]1[/cyan]. Hologram (hologram)")
+        console.print("  [cyan]2[/cyan]. T-Mobile US (fast.t-mobile.com)")
+        console.print("  [cyan]3[/cyan]. AT&T (broadband)")
+        console.print("  [cyan]4[/cyan]. Verizon (vzwinternet)")
+        console.print("  [cyan]5[/cyan]. Custom APN")
+        console.print()
+
+        choice = Prompt.ask("Select option", choices=["1", "2", "3", "4", "5"], default="5")
+
+        # Map choices to APNs
+        apn_presets = {
+            "1": ("hologram", "IP"),
+            "2": ("fast.t-mobile.com", "IPV4V6"),
+            "3": ("broadband", "IP"),
+            "4": ("vzwinternet", "IP"),
+        }
+
+        if choice in apn_presets:
+            apn, pdp_type = apn_presets[choice]
+            cid = Prompt.ask("Enter Context ID (CID)", default="1")
+        else:
+            # Custom
+            cid = Prompt.ask("Enter Context ID (CID)", default="1")
+            pdp_type = Prompt.ask("Enter PDP Type", choices=["IP", "IPV6", "IPV4V6"], default="IP")
+            apn = Prompt.ask("Enter APN name")
 
         # Set APN
         cmd = f'AT+CGDCONT={cid},"{pdp_type}","{apn}"'
@@ -1112,6 +1141,14 @@ class NetworkTools:
 
         if result.success:
             console.print("[green]✓ APN configuration successful[/green]")
+
+            # Ask if user wants to activate the context
+            if Confirm.ask("\nActivate this PDP context now?", default=True):
+                activate_result = self.modem.send_at_command(f"AT+CGACT=1,{cid}")
+                if activate_result.success:
+                    console.print("[green]✓ PDP context activated[/green]")
+                else:
+                    console.print(f"[yellow]⚠ Activation failed: {activate_result.error}[/yellow]")
         else:
             console.print(f"[red]✗ APN configuration failed: {result.error}[/red]")
 
@@ -1263,8 +1300,9 @@ class ModemDiagnosticTool:
 ╔═══════════════════════════════════════════════════════════════╗
 ║                                                               ║
 ║        Cellular Modem Diagnostic & Configuration Tool        ║
-║                    for Raspberry Pi                          ║
+║                    for Raspberry Pi & Windows                ║
 ║                                                               ║
+║               ☕ buymeacoffee.com/mike.brandon                ║
 ╚═══════════════════════════════════════════════════════════════╝
         """
         console.print(Panel(banner, style="bold cyan", box=box.DOUBLE))
@@ -1820,10 +1858,11 @@ class ModemDiagnosticTool:
                 ("2", "Quick Status Check", "View current status"),
                 ("3", "Network Tools", "Scan, configure, troubleshoot network"),
                 ("4", "Data Connection Tools", "Check and troubleshoot data usage"),
-                ("5", "Vendor-Specific Tools", "Advanced modem-specific features"),
-                ("6", "Manual AT Command", "Send custom AT commands"),
-                ("7", "Reconnect Modem", "Change connection settings"),
-                ("8", "Export Diagnostic Report", "Save results to file"),
+                ("5", "Common AT Commands", "Quick access to useful commands"),
+                ("6", "Vendor-Specific Tools", "Advanced modem-specific features"),
+                ("7", "Manual AT Command", "Send custom AT commands"),
+                ("8", "Reconnect Modem", "Change connection settings"),
+                ("9", "Export Diagnostic Report", "Save results to file"),
                 ("0", "Exit", "Quit application"),
             ]
 
@@ -1844,14 +1883,16 @@ class ModemDiagnosticTool:
             elif choice == "4":
                 self.data_tools_menu()
             elif choice == "5":
-                self.vendor_tools_menu()
+                self.common_at_commands_menu()
             elif choice == "6":
-                self.manual_at_command()
+                self.vendor_tools_menu()
             elif choice == "7":
+                self.manual_at_command()
+            elif choice == "8":
                 if self.modem:
                     self.modem.disconnect()
                 self.connect_modem()
-            elif choice == "8":
+            elif choice == "9":
                 self.export_report()
 
     def run_full_diagnostic(self):
@@ -1991,6 +2032,76 @@ class ModemDiagnosticTool:
                     console.print("[green]✓ PDP context deactivated[/green]")
                 else:
                     console.print(f"[red]✗ Deactivation failed: {result.error}[/red]")
+                Prompt.ask("\nPress Enter to continue")
+
+    def common_at_commands_menu(self):
+        """Menu of common AT commands with descriptions"""
+        if not self.connected:
+            console.print("[red]Not connected to modem. Please connect first.[/red]")
+            time.sleep(2)
+            return
+
+        while True:
+            console.print("\n")
+            console.rule("[bold cyan]Common AT Commands", style="cyan")
+            console.print()
+
+            commands = [
+                ("1", "AT+CSQ", "Check signal quality (RSSI and BER)"),
+                ("2", "AT+COPS?", "Check current network operator"),
+                ("3", "AT+CREG?", "Check network registration status (CS domain)"),
+                ("4", "AT+CGREG?", "Check GPRS registration status (PS domain)"),
+                ("5", "AT+CEREG?", "Check EPS/LTE registration status"),
+                ("6", "AT+CGDCONT?", "View PDP context configuration (APN settings)"),
+                ("7", "AT+CGACT?", "Check PDP context activation status"),
+                ("8", "AT+CGPADDR", "Get IP address assignment"),
+                ("9", "AT+CPIN?", "Check SIM card status"),
+                ("10", "AT+CIMI", "Get IMSI (subscriber identity)"),
+                ("11", "AT+CCID", "Get ICCID (SIM card serial number)"),
+                ("12", "AT+CGSN", "Get IMEI (device identity)"),
+                ("13", "AT+CGMI", "Get modem manufacturer"),
+                ("14", "AT+CGMM", "Get modem model"),
+                ("15", "AT+CGMR", "Get firmware version"),
+                ("16", "AT+CGATT?", "Check GPRS attach status"),
+                ("17", "AT+COPS=?", "Scan available networks (slow, 30-60s)"),
+                ("18", "ATI", "Get detailed modem information"),
+                ("0", "Back", "Return to main menu"),
+            ]
+
+            for num, cmd, desc in commands:
+                if num == "0":
+                    console.print(f"  [bold cyan]{num}[/bold cyan]. [white]{desc}[/white]")
+                else:
+                    console.print(f"  [bold cyan]{num:2s}[/bold cyan]. [yellow]{cmd:20s}[/yellow] - [dim]{desc}[/dim]")
+
+            console.print()
+            choice = Prompt.ask("Select command", choices=[item[0] for item in commands], default="0")
+
+            if choice == "0":
+                break
+
+            # Find the selected command
+            selected = next((item for item in commands if item[0] == choice), None)
+            if selected:
+                cmd = selected[1]
+                desc = selected[2]
+
+                console.print(f"\n[bold cyan]Executing:[/bold cyan] [yellow]{cmd}[/yellow]")
+                console.print(f"[dim]{desc}[/dim]\n")
+
+                if "Scan" in desc:
+                    console.print("[yellow]This may take 30-60 seconds...[/yellow]\n")
+                    result = self.modem.send_at_command(cmd, wait_time=60)
+                else:
+                    result = self.modem.send_at_command(cmd)
+
+                console.print(f"[cyan]Raw Response:[/cyan]")
+                console.print(Panel(result.raw_response, box=box.ROUNDED))
+
+                if result.parsed_data and len(result.parsed_data) > 1:
+                    console.print(f"\n[cyan]Parsed Data:[/cyan]")
+                    console.print(json.dumps(result.parsed_data, indent=2))
+
                 Prompt.ask("\nPress Enter to continue")
 
     def manual_at_command(self):
@@ -2179,6 +2290,7 @@ class ModemDiagnosticTool:
                 f.write("=" * 70 + "\n")
                 f.write("CELLULAR MODEM DIAGNOSTIC REPORT\n")
                 f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("Generated by: Modem Diagnostic Tool (modemo)\n")
                 f.write("=" * 70 + "\n\n")
 
                 for result in results:
@@ -2190,6 +2302,11 @@ class ModemDiagnosticTool:
                     f.write(f"\nRaw Response:\n{result.raw_response}\n")
                     f.write(f"\nParsed Data:\n{json.dumps(result.parsed_data, indent=2)}\n")
                     f.write("-" * 70 + "\n")
+
+                f.write("\n" + "=" * 70 + "\n")
+                f.write("Find this tool helpful?\n")
+                f.write("Support development: https://buymeacoffee.com/mike.brandon\n")
+                f.write("=" * 70 + "\n")
 
             console.print(f"[green]✓ Report saved to: {filename}[/green]")
         except Exception as e:
@@ -2216,7 +2333,8 @@ class ModemDiagnosticTool:
                 self.modem.disconnect()
             # Restart ModemManager if we stopped it
             self._restart_modemmanager_if_needed()
-            console.print("\n[cyan]Thank you for using Modem Diagnostic Tool![/cyan]\n")
+            console.print("\n[cyan]Thank you for using Modem Diagnostic Tool![/cyan]")
+            console.print("[dim]Found this helpful? ☕ https://buymeacoffee.com/mike.brandon[/dim]\n")
 
 
 if __name__ == "__main__":

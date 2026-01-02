@@ -7,10 +7,10 @@
 ./install.sh
 
 # Run
-python3 modem_diagnostics.py
+python3 modemo.py
 
 # Or with sudo for permissions
-sudo python3 modem_diagnostics.py
+sudo python3 modemo.py
 
 # Connection is now EASY!
 # 1. Select "Auto-detect modem" (option 1)

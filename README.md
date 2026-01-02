@@ -208,7 +208,7 @@ Automatically selecting:
    - Scan available networks
    - View FPLMN (forbidden networks list)
    - Clear FPLMN (forbidden networks list)
-   - Configure APN settings
+   - **Configure APN with presets** (Hologram, T-Mobile, AT&T, Verizon)
    - Force network registration
 
 4. Data Connection Tools
@@ -216,20 +216,26 @@ Automatically selecting:
    - Verify data connection
    - Activate/deactivate PDP contexts
 
-5. Vendor-Specific Tools
+5. Common AT Commands (NEW!)
+   - 18 pre-configured useful commands
+   - Clear descriptions of what each does
+   - Automatic parsing and formatting
+   - Quick access to signal, registration, SIM, and network info
+
+6. Vendor-Specific Tools
    - Quectel: Advanced cell info, temperature, neighbor cells, GPS status, eSIM support
    - Sierra Wireless: Status information
    - u-blox: Cell information
 
-6. Manual AT Command
+7. Manual AT Command
    - Send custom AT commands
    - View raw and parsed responses
 
-7. Reconnect Modem
+8. Reconnect Modem
    - Change connection settings
    - Switch to different serial port
 
-8. Export Diagnostic Report
+9. Export Diagnostic Report
    - Generate detailed report file
    - Save all diagnostic results
    - Cross-platform save locations
@@ -474,6 +480,47 @@ Reports include:
 - Success/failure status
 - Error messages if any
 
+## Advanced Configuration
+
+### Environment Variables
+
+**MODEMO_DEBUG** - Enable verbose debug output
+```bash
+export MODEMO_DEBUG=1
+sudo python3 modemo.py
+```
+Shows detailed information about each port test, timeout events, and thread operations. Useful for troubleshooting detection issues.
+
+**MODEMO_SKIP_PORTS** - Skip specific ports during auto-detection
+```bash
+export MODEMO_SKIP_PORTS="/dev/ttyUSB1,/dev/ttyUSB0"
+sudo python3 modemo.py
+```
+Useful if certain ports consistently cause hangs or are known to not be modem AT ports (e.g., GPS/NMEA ports).
+
+### Common AT Commands Menu
+
+The new "Common AT Commands" menu (Option 5) provides quick access to 18 frequently-used commands:
+
+- **Signal & Registration**: Check signal quality, network status, operator info
+- **SIM Information**: View IMSI, ICCID, SIM status
+- **Device Info**: Get IMEI, manufacturer, model, firmware version
+- **Data Connection**: Check PDP contexts, IP addresses, GPRS status
+- **Network Scan**: Find available networks (takes 30-60 seconds)
+
+Each command includes a description of what it does and automatically parses the response into human-readable format.
+
+### APN Configuration Presets
+
+Configure APN with one-click presets for popular carriers:
+- Hologram (hologram)
+- T-Mobile US (fast.t-mobile.com)
+- AT&T (broadband)
+- Verizon (vzwinternet)
+- Custom APN
+
+The tool also offers to activate the PDP context immediately after configuration.
+
 ## Tips for Best Results
 
 1. **Signal Quality First**: Always check signal quality before troubleshooting other issues. Most problems stem from poor signal.
@@ -487,6 +534,8 @@ Reports include:
 5. **Monitor Over Time**: Run quick status checks periodically to catch degrading signal or network issues early.
 
 6. **Check Multiple Registration Types**: LTE devices should check CEREG, not just CREG/CGREG.
+
+7. **Use Debug Mode**: If auto-detection is slow or hanging, enable debug mode to see exactly what's happening.
 
 ## Technical Notes
 
@@ -530,6 +579,14 @@ Consult your specific modem's AT command manual for:
 ## License
 
 This tool is provided as-is for use with cellular modems on Raspberry Pi and Linux systems.
+
+## Support the Project
+
+If this tool has helped you save time troubleshooting your cellular modem, consider supporting its development:
+
+☕ **[Buy Me a Coffee](https://buymeacoffee.com/mike.brandon)**
+
+Your support helps maintain and improve this tool for the community. Thank you! 🙏
 
 ## Contributing
 
@@ -577,11 +634,21 @@ The optimized two-phase auto-detection provides significant speed improvements:
 
 ## Version History
 
+**v1.2** - UX & Reliability Update
+- **Common AT Commands menu** - 18 pre-configured commands with descriptions
+- **Simplified APN configuration** - One-click presets for popular carriers
+- **Auto-activation** - Option to activate PDP context immediately after configuration
+- **Early exit detection** - Stops testing after finding first working port
+- **ModemManager integration** - Automatic detection and safe temporary stopping
+- **Debug mode** - Verbose logging for troubleshooting (MODEMO_DEBUG=1)
+- **Port blacklist** - Skip problematic ports via MODEMO_SKIP_PORTS
+- **Improved timeout handling** - Faster detection with aggressive timeouts
+
 **v1.1** - Performance & Cross-Platform Update
 - Optimized two-phase auto-detection (80-90% faster)
 - Full Windows support with COM port auto-detection
 - Cross-platform path handling for report exports
-- Smart port prioritization
+- Smart port prioritization (highest USB first)
 - Platform-aware defaults
 - Reduced connection timeouts
 - Enhanced vendor-specific tools menu
