@@ -1457,6 +1457,94 @@ class DataTransferTest:
             console.print(f"[yellow]Could not resolve {hostname}: {e}[/yellow]")
             return None
 
+    def get_modem_ip_address(self, cid: int = 1) -> Optional[str]:
+        """Get IP address from modem's PDP context"""
+        try:
+            # Try specific CID first
+            result = self.modem.send_at_command(f"AT+CGPADDR={cid}")
+            if result.success and '+CGPADDR:' in result.raw_response:
+                # Parse: +CGPADDR: 1,"10.228.100.124"
+                for line in result.raw_response.split('\n'):
+                    if '+CGPADDR:' in line:
+                        match = re.search(r'"([0-9.]+)"', line)
+                        if match:
+                            return match.group(1)
+
+            # Try without CID (some modems support this)
+            result = self.modem.send_at_command("AT+CGPADDR")
+            if result.success and '+CGPADDR:' in result.raw_response:
+                for line in result.raw_response.split('\n'):
+                    if '+CGPADDR:' in line:
+                        match = re.search(r'"([0-9.]+)"', line)
+                        if match:
+                            return match.group(1)
+
+            return None
+        except Exception as e:
+            console.print(f"[yellow]Error getting modem IP: {e}[/yellow]")
+            return None
+
+    def configure_cellular_interface(self, interface_name: str, ip_address: str, netmask: str = "255.255.255.252") -> bool:
+        """Bring cellular interface UP and assign IP address"""
+        try:
+            if IS_LINUX:
+                # Bring interface UP
+                console.print(f"[cyan]Bringing {interface_name} UP...[/cyan]")
+                result = subprocess.run(['sudo', 'ip', 'link', 'set', interface_name, 'up'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    console.print(f"[red]Failed to bring interface UP: {result.stderr}[/red]")
+                    return False
+
+                console.print(f"[green]✓ Interface {interface_name} is UP[/green]")
+                time.sleep(1)
+
+                # Assign IP address
+                console.print(f"[cyan]Assigning IP {ip_address} to {interface_name}...[/cyan]")
+
+                # First, flush any existing IP addresses
+                subprocess.run(['sudo', 'ip', 'addr', 'flush', 'dev', interface_name],
+                             capture_output=True, text=True, timeout=5)
+
+                # Add the IP address
+                result = subprocess.run(['sudo', 'ip', 'addr', 'add', f'{ip_address}/30', 'dev', interface_name],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    console.print(f"[red]Failed to assign IP: {result.stderr}[/red]")
+                    return False
+
+                console.print(f"[green]✓ IP address {ip_address} assigned to {interface_name}[/green]")
+                return True
+            elif IS_WINDOWS:
+                console.print("[yellow]Automatic interface configuration not yet supported on Windows[/yellow]")
+                return False
+        except Exception as e:
+            console.print(f"[red]Error configuring interface: {e}[/red]")
+            return False
+
+    def add_default_route_cellular(self, interface_name: str) -> bool:
+        """Add default route via cellular interface"""
+        try:
+            if IS_LINUX:
+                console.print(f"[cyan]Adding default route via {interface_name}...[/cyan]")
+
+                # Add default route
+                result = subprocess.run(['sudo', 'ip', 'route', 'add', 'default', 'dev', interface_name, 'metric', '100'],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    # Route might already exist, that's okay
+                    if 'File exists' not in result.stderr:
+                        console.print(f"[yellow]Note: {result.stderr}[/yellow]")
+
+                console.print(f"[green]✓ Default route added via {interface_name}[/green]")
+                return True
+            elif IS_WINDOWS:
+                console.print("[yellow]Route configuration not yet supported on Windows[/yellow]")
+                return False
+        except Exception as e:
+            console.print(f"[yellow]Error adding default route: {e}[/yellow]")
+            return False
+
     def verify_routing(self) -> Dict[str, any]:
         """Comprehensive routing verification before test"""
         verification = {
@@ -3088,27 +3176,88 @@ class ModemDiagnosticTool:
                         console.print()
 
                         if routing['cellular_interfaces_found']:
-                            console.print("[bold yellow]📝 Step-by-Step Fix:[/bold yellow]")
-
                             # Check what specific issues exist
                             has_no_ip = any("No IP address assigned" in str(iface.get('issues', [])) for iface in routing['cellular_interfaces_found'])
                             has_down = any("Interface is DOWN" in str(iface.get('issues', [])) for iface in routing['cellular_interfaces_found'])
 
-                            if has_no_ip:
+                            # Check if modem has an IP address via PDP context
+                            console.print("[cyan]Checking modem PDP context...[/cyan]")
+                            modem_ip = transfer_test.get_modem_ip_address()
+
+                            if modem_ip and (has_down or has_no_ip):
+                                # Modem has IP but interface doesn't - offer automatic fix
+                                console.print(f"[green]✓ Modem has IP address: {modem_ip}[/green]")
+                                console.print("[yellow]But network interface is not configured[/yellow]")
                                 console.print()
-                                console.print("  [bold]Issue:[/bold] Interface has no IP address")
-                                console.print("  [bold]Likely cause:[/bold] PDP context not activated")
+
+                                # Get the interface name
+                                interface_name = routing['cellular_interfaces_found'][0]['name']
+
+                                console.print("[bold yellow]🔧 Automatic Fix Available:[/bold yellow]")
+                                console.print(f"  The modem has an active PDP context with IP {modem_ip}")
+                                console.print(f"  but the Linux interface '{interface_name}' is not configured.")
+                                console.print()
+                                console.print("  I can automatically:")
+                                console.print(f"    1. Bring {interface_name} UP")
+                                console.print(f"    2. Assign IP address {modem_ip}")
+                                console.print(f"    3. Configure routing for cellular data")
+                                console.print()
+
+                                if Confirm.ask("[green]Configure cellular interface automatically?[/green]", default=True):
+                                    console.print()
+                                    if transfer_test.configure_cellular_interface(interface_name, modem_ip):
+                                        console.print("[green]✓ Interface configured successfully![/green]")
+                                        console.print()
+
+                                        # Ask about default route
+                                        if Confirm.ask("Add default route via cellular? (Makes cellular the default for all traffic)", default=False):
+                                            transfer_test.add_default_route_cellular(interface_name)
+
+                                        console.print()
+                                        console.print("[bold green]✓ Ready to test![/bold green]")
+                                        console.print("[dim]Press Enter to continue with the test[/dim]")
+                                        Prompt.ask()
+
+                                        # Re-verify routing after configuration
+                                        continue
+                                    else:
+                                        console.print("[red]✗ Failed to configure interface[/red]")
+                                        console.print("[yellow]You may need to run with sudo permissions[/yellow]")
+                                        console.print()
+                                        Prompt.ask("Press Enter to return to menu")
+                                        continue
+                                else:
+                                    console.print()
+                                    console.print("[bold yellow]📝 Manual Steps:[/bold yellow]")
+                                    console.print(f"  sudo ip link set {interface_name} up")
+                                    console.print(f"  sudo ip addr add {modem_ip}/30 dev {interface_name}")
+                                    console.print(f"  sudo ip route add default dev {interface_name}")
+                                    console.print()
+                                    Prompt.ask("Press Enter to return to menu")
+                                    continue
+
+                            elif has_no_ip and not modem_ip:
+                                # Neither modem nor interface has IP - PDP context issue
+                                console.print("[yellow]Modem PDP context has no IP address[/yellow]")
+                                console.print()
+                                console.print("[bold yellow]📝 Step-by-Step Fix:[/bold yellow]")
+                                console.print()
+                                console.print("  [bold]Issue:[/bold] PDP context not activated or no IP assigned")
                                 console.print()
                                 console.print("  [bold cyan]Fix:[/bold cyan]")
-                                console.print("    1. Go back to APN & Data Connection menu")
+                                console.print("    1. Go back to APN & Data Connection menu (option 0, then 4)")
                                 console.print("    2. Select 'Check PDP Context Status' (option 2)")
                                 console.print("    3. Verify APN is configured")
                                 console.print("    4. Select 'Activate PDP Context' (option 4)")
                                 console.print("    5. Enter CID (usually 1)")
                                 console.print("    6. Wait a few seconds for IP assignment")
-                                console.print("    7. Try this test again")
+                                console.print("    7. Return and try this test again")
+                                console.print()
+                                Prompt.ask("Press Enter to return to menu")
+                                continue
 
-                            if has_down and not has_no_ip:
+                            elif has_down and not has_no_ip:
+                                # Interface has IP but is DOWN
                                 console.print()
                                 console.print("  [bold]Issue:[/bold] Interface is DOWN")
                                 console.print()
@@ -3116,6 +3265,9 @@ class ModemDiagnosticTool:
                                 for iface in routing['cellular_interfaces_found']:
                                     if iface['status'] == 'DOWN':
                                         console.print(f"    sudo ip link set {iface['name']} up")
+                                console.print()
+                                Prompt.ask("Press Enter to return to menu")
+                                continue
 
                         else:
                             console.print("[yellow]No cellular interfaces found at all[/yellow]")
@@ -3125,10 +3277,9 @@ class ModemDiagnosticTool:
                             console.print("    • Run: ip link show")
                             console.print("    • Look for wwan*, ppp*, or usb* interfaces")
                             console.print("    • Modem may need to be configured first")
-
-                        console.print()
-                        Prompt.ask("Press Enter to return to menu")
-                        continue
+                            console.print()
+                            Prompt.ask("Press Enter to return to menu")
+                            continue
 
                 # Detect interface (optional)
                 interfaces = transfer_test.get_cellular_interfaces()
