@@ -1836,7 +1836,6 @@ class DataUsageTools:
         tests = [
             ("AT+CGATT?", "GPRS Attach Status"),
             ("AT+CGACT?", "PDP Context Activation"),
-            ("AT+CGPADDR", "IP Address Assignment"),
         ]
 
         table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
@@ -1855,6 +1854,38 @@ class DataUsageTools:
                 details = result.error or "No response"
 
             table.add_row(description, status, details)
+
+        # Check IP addresses for all CIDs (try both with and without CID parameter)
+        ip_found = False
+        ip_details = []
+
+        # First try AT+CGPADDR without CID (returns all)
+        result = self.modem.send_at_command("AT+CGPADDR")
+        if result.success and '+CGPADDR:' in result.raw_response:
+            ip_found = True
+            for line in result.raw_response.split('\n'):
+                if '+CGPADDR:' in line:
+                    ip_details.append(line.strip())
+
+        # If that didn't work, try specific CIDs (1-5 are common)
+        if not ip_found:
+            for cid in range(1, 6):
+                result = self.modem.send_at_command(f"AT+CGPADDR={cid}")
+                if result.success and '+CGPADDR:' in result.raw_response:
+                    ip_found = True
+                    for line in result.raw_response.split('\n'):
+                        if '+CGPADDR:' in line:
+                            ip_details.append(line.strip())
+
+        # Add IP address result to table
+        if ip_found:
+            status = "[green]✓ Pass[/green]"
+            details = ' | '.join(ip_details) if ip_details else result.raw_response.strip().replace('\r\n', ' ')
+        else:
+            status = "[red]✗ Fail[/red]"
+            details = "No IP address assigned"
+
+        table.add_row("IP Address Assignment", status, details)
 
         console.print(table)
         console.print()
@@ -2606,8 +2637,8 @@ class ModemDiagnosticTool:
 
                 # Parse activation status
                 active_cids = set()
-                if act_result.success and act_result.response:
-                    for line in act_result.response.split('\n'):
+                if act_result.success and act_result.raw_response:
+                    for line in act_result.raw_response.split('\n'):
                         if '+CGACT:' in line:
                             parts = line.replace('+CGACT:', '').strip().split(',')
                             if len(parts) >= 2 and parts[1].strip() == '1':
@@ -2666,8 +2697,8 @@ class ModemDiagnosticTool:
 
                 # Parse activation status
                 active_cids = set()
-                if act_result.success and act_result.response:
-                    for line in act_result.response.split('\n'):
+                if act_result.success and act_result.raw_response:
+                    for line in act_result.raw_response.split('\n'):
                         if '+CGACT:' in line:
                             parts = line.replace('+CGACT:', '').strip().split(',')
                             if len(parts) >= 2 and parts[1].strip() == '1':
