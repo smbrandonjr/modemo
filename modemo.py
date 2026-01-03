@@ -1387,6 +1387,8 @@ class DataTransferTest:
         verification = {
             'cellular_available': False,
             'cellular_interface': None,
+            'cellular_interfaces_found': [],
+            'cellular_all_issues': [],
             'wifi_active': False,
             'wifi_is_default': False,
             'routing_ok': False,
@@ -1394,18 +1396,42 @@ class DataTransferTest:
             'recommendations': []
         }
 
-        # Get cellular interfaces
-        cellular_ifaces = self.get_cellular_interfaces()
+        # Get ALL cellular interfaces (diagnostic mode)
+        cellular_ifaces = self.get_cellular_interfaces(diagnostic_mode=True)
+        verification['cellular_interfaces_found'] = cellular_ifaces
+
         if cellular_ifaces:
+            # Check for ready interfaces
             for iface in cellular_ifaces:
-                if iface['status'] == 'UP' and iface['ip'] != 'No IP assigned':
+                if iface.get('is_ready', False):
                     verification['cellular_available'] = True
                     verification['cellular_interface'] = iface['name']
                     break
 
+            # Collect all issues from all interfaces
+            for iface in cellular_ifaces:
+                if iface.get('issues'):
+                    for issue in iface['issues']:
+                        verification['cellular_all_issues'].append(f"{iface['name']}: {issue}")
+
         if not verification['cellular_available']:
-            verification['warnings'].append("No active cellular interface with IP address found")
-            verification['recommendations'].append("Activate PDP context first (APN & Data Connection → Check PDP Context)")
+            if not cellular_ifaces:
+                verification['warnings'].append("No cellular interfaces detected (wwan*, ppp*, usb*)")
+                verification['recommendations'].append("Check modem connection and AT commands")
+                verification['recommendations'].append("Run: ip link show")
+            else:
+                verification['warnings'].append("Cellular interfaces found but not ready for data transfer")
+                verification['recommendations'].append("Check details below to see what's missing")
+
+                # Specific recommendations based on issues
+                has_down_interface = any("Interface is DOWN" in str(iface.get('issues', [])) for iface in cellular_ifaces)
+                has_no_ip = any("No IP address assigned" in str(iface.get('issues', [])) for iface in cellular_ifaces)
+
+                if has_no_ip:
+                    verification['recommendations'].append("Activate PDP context: APN & Data Connection → Activate PDP Context")
+                    verification['recommendations'].append("Verify APN configuration is correct")
+                if has_down_interface:
+                    verification['recommendations'].append("Bring interface UP (may happen automatically after PDP activation)")
 
         # Check WiFi status
         wifi_status = self.check_wifi_status()
@@ -1428,8 +1454,12 @@ class DataTransferTest:
 
         return verification
 
-    def get_cellular_interfaces(self) -> List[Dict[str, str]]:
-        """Detect available cellular network interfaces"""
+    def get_cellular_interfaces(self, diagnostic_mode: bool = False) -> List[Dict[str, str]]:
+        """Detect available cellular network interfaces
+
+        Args:
+            diagnostic_mode: If True, return ALL found interfaces regardless of state
+        """
         interfaces = []
 
         try:
@@ -1444,22 +1474,49 @@ class DataTransferTest:
                             match = re.search(r'\d+:\s+(' + pattern + r'):', line)
                             if match:
                                 iface_name = match.group(1)
-                                # Get IP address for this interface
+
+                                # Get detailed interface info
                                 ip_result = subprocess.run(['ip', 'addr', 'show', iface_name],
                                                           capture_output=True, text=True, timeout=5)
                                 ip_addr = None
+                                ip_details = ""
                                 if ip_result.returncode == 0:
-                                    ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', ip_result.stdout)
+                                    ip_match = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+(/\d+)?)', ip_result.stdout)
                                     if ip_match:
                                         ip_addr = ip_match.group(1)
+                                        ip_details = ip_match.group(0)
 
                                 # Check if interface is UP
                                 is_up = 'UP' in line and 'state UP' in line
+                                is_lower_up = 'LOWER_UP' in line
+
+                                # Detailed status
+                                status_details = []
+                                if is_up:
+                                    status_details.append("UP")
+                                else:
+                                    status_details.append("DOWN")
+
+                                if is_lower_up:
+                                    status_details.append("LOWER_UP")
+
+                                # Issues found
+                                issues = []
+                                if not is_up:
+                                    issues.append("Interface is DOWN")
+                                if not ip_addr:
+                                    issues.append("No IP address assigned")
+                                if is_up and not is_lower_up:
+                                    issues.append("Physical layer not ready")
 
                                 interfaces.append({
                                     'name': iface_name,
                                     'ip': ip_addr or 'No IP assigned',
-                                    'status': 'UP' if is_up else 'DOWN'
+                                    'status': 'UP' if is_up else 'DOWN',
+                                    'is_ready': is_up and ip_addr is not None,
+                                    'status_details': ', '.join(status_details),
+                                    'issues': issues,
+                                    'raw_line': line.strip()
                                 })
             elif IS_WINDOWS:
                 # Windows - look for cellular adapters
@@ -2623,11 +2680,17 @@ class ModemDiagnosticTool:
                 table.add_column("Check", style="cyan", width=30)
                 table.add_column("Status", style="white", width=40)
 
-                # Cellular check
+                # Cellular check with diagnostics
                 if routing['cellular_available']:
-                    table.add_row("Cellular Interface", f"[green]✓ {routing['cellular_interface']} (Active)[/green]")
+                    table.add_row("Cellular Interface", f"[green]✓ {routing['cellular_interface']} (Ready)[/green]")
                 else:
-                    table.add_row("Cellular Interface", "[red]✗ No active cellular interface[/red]")
+                    # Show diagnostic information
+                    if routing['cellular_interfaces_found']:
+                        # Show count of found interfaces
+                        count = len(routing['cellular_interfaces_found'])
+                        table.add_row("Cellular Interfaces Found", f"[yellow]{count} detected but not ready[/yellow]")
+                    else:
+                        table.add_row("Cellular Interface", "[red]✗ None detected[/red]")
 
                 # WiFi check
                 wifi_status = transfer_test.check_wifi_status()
@@ -2654,6 +2717,40 @@ class ModemDiagnosticTool:
 
                 console.print(table)
                 console.print()
+
+                # Show detailed cellular interface diagnostics if interfaces were found but not ready
+                if routing['cellular_interfaces_found'] and not routing['cellular_available']:
+                    console.print("[bold yellow]📋 Cellular Interface Diagnostics:[/bold yellow]\n")
+
+                    diag_table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+                    diag_table.add_column("Interface", style="cyan", width=12)
+                    diag_table.add_column("Status", style="white", width=15)
+                    diag_table.add_column("IP Address", style="white", width=18)
+                    diag_table.add_column("Issues", style="yellow", width=35)
+
+                    for iface in routing['cellular_interfaces_found']:
+                        status_color = "green" if iface['status'] == 'UP' else "red"
+                        ip_color = "green" if iface['ip'] != 'No IP assigned' else "red"
+
+                        issues_text = ", ".join(iface.get('issues', [])) if iface.get('issues') else "None"
+                        if not iface.get('issues'):
+                            issues_text = "[green]Ready![/green]"
+
+                        diag_table.add_row(
+                            iface['name'],
+                            f"[{status_color}]{iface['status']}[/{status_color}]",
+                            f"[{ip_color}]{iface['ip']}[/{ip_color}]",
+                            issues_text
+                        )
+
+                    console.print(diag_table)
+                    console.print()
+
+                    # Explain what's needed
+                    console.print("[bold cyan]🔧 What's Needed for Data Transfer:[/bold cyan]")
+                    console.print("  ✓ Interface must be UP")
+                    console.print("  ✓ Interface must have IP address assigned")
+                    console.print()
 
                 # Show warnings if any
                 if routing['warnings']:
@@ -2725,11 +2822,51 @@ class ModemDiagnosticTool:
                                 Prompt.ask("\nPress Enter to continue")
                                 continue
                     elif not routing['cellular_available']:
-                        console.print("[bold red]✗ No active cellular interface found[/bold red]")
-                        console.print("\n[yellow]Troubleshooting:[/yellow]")
-                        for rec in routing['recommendations']:
-                            console.print(f"  • {rec}")
-                        Prompt.ask("\nPress Enter to continue")
+                        console.print("[bold red]✗ Cannot proceed with test[/bold red]")
+                        console.print("[red]Cellular interface is not ready for data transfer[/red]")
+                        console.print()
+
+                        if routing['cellular_interfaces_found']:
+                            console.print("[bold yellow]📝 Step-by-Step Fix:[/bold yellow]")
+
+                            # Check what specific issues exist
+                            has_no_ip = any("No IP address assigned" in str(iface.get('issues', [])) for iface in routing['cellular_interfaces_found'])
+                            has_down = any("Interface is DOWN" in str(iface.get('issues', [])) for iface in routing['cellular_interfaces_found'])
+
+                            if has_no_ip:
+                                console.print()
+                                console.print("  [bold]Issue:[/bold] Interface has no IP address")
+                                console.print("  [bold]Likely cause:[/bold] PDP context not activated")
+                                console.print()
+                                console.print("  [bold cyan]Fix:[/bold cyan]")
+                                console.print("    1. Go back to APN & Data Connection menu")
+                                console.print("    2. Select 'Check PDP Context Status' (option 2)")
+                                console.print("    3. Verify APN is configured")
+                                console.print("    4. Select 'Activate PDP Context' (option 4)")
+                                console.print("    5. Enter CID (usually 1)")
+                                console.print("    6. Wait a few seconds for IP assignment")
+                                console.print("    7. Try this test again")
+
+                            if has_down and not has_no_ip:
+                                console.print()
+                                console.print("  [bold]Issue:[/bold] Interface is DOWN")
+                                console.print()
+                                console.print("  [bold cyan]Fix:[/bold cyan]")
+                                for iface in routing['cellular_interfaces_found']:
+                                    if iface['status'] == 'DOWN':
+                                        console.print(f"    sudo ip link set {iface['name']} up")
+
+                        else:
+                            console.print("[yellow]No cellular interfaces found at all[/yellow]")
+                            console.print()
+                            console.print("  [bold cyan]Troubleshooting:[/bold cyan]")
+                            console.print("    • Check modem is connected via USB")
+                            console.print("    • Run: ip link show")
+                            console.print("    • Look for wwan*, ppp*, or usb* interfaces")
+                            console.print("    • Modem may need to be configured first")
+
+                        console.print()
+                        Prompt.ask("Press Enter to return to menu")
                         continue
 
                 # Detect interface (optional)
