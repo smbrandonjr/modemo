@@ -49,6 +49,34 @@ console = Console()
 IS_WINDOWS = platform.system() == 'Windows'
 IS_LINUX = platform.system() == 'Linux'
 
+
+def auto_continue(seconds: int = 3, message: str = "Continuing") -> bool:
+    """
+    Auto-continue with countdown and skip option
+    Returns True if user pressed a key to skip, False if timed out
+    """
+    import sys
+    import select
+
+    for i in range(seconds, 0, -1):
+        console.print(f"\r[dim]{message} in {i}s... (Press any key to skip)[/dim]", end="")
+
+        # Check if running in a terminal that supports select
+        if IS_LINUX and sys.stdin.isatty():
+            # Use select to check for input without blocking
+            ready, _, _ = select.select([sys.stdin], [], [], 1.0)
+            if ready:
+                # Clear the input buffer
+                sys.stdin.readline()
+                console.print("\r" + " " * 60 + "\r", end="")  # Clear the line
+                return True
+        else:
+            # Fallback: just sleep
+            time.sleep(1)
+
+    console.print("\r" + " " * 60 + "\r", end="")  # Clear the line
+    return False
+
 # Port blacklist - can be set via environment variable
 # Example: export MODEMO_SKIP_PORTS="/dev/ttyUSB1,/dev/ttyUSB0"
 SKIP_PORTS = set(os.environ.get('MODEMO_SKIP_PORTS', '').split(',')) if os.environ.get('MODEMO_SKIP_PORTS') else set()
@@ -2690,7 +2718,8 @@ class ModemDiagnosticTool:
         diag.run_full_diagnostic()
         diag.display_results()
 
-        Prompt.ask("\nPress Enter to continue")
+        console.print()
+        auto_continue(5, "Returning to menu")
 
     def quick_status(self):
         """Show quick status overview"""
@@ -2727,7 +2756,8 @@ class ModemDiagnosticTool:
             color = "green" if cpin.parsed_data.get('sim_ready', False) else "red"
             console.print(f"[bold]SIM Status:[/bold] [{color}]{cpin.parsed_data['sim_status']}[/{color}]")
 
-        Prompt.ask("\nPress Enter to continue")
+        console.print()
+        auto_continue(3, "Returning to menu")
 
     def network_tools_menu(self):
         """Network tools submenu"""
@@ -2756,16 +2786,20 @@ class ModemDiagnosticTool:
                 break
             elif choice == "1":
                 tools.scan_networks()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(5, "Returning to menu")
             elif choice == "2":
                 tools.force_network_registration()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "3":
                 tools.view_fplmn()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "4":
                 tools.clear_fplmn()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
 
     def data_tools_menu(self):
         """APN & Data connection tools submenu"""
@@ -2798,13 +2832,16 @@ class ModemDiagnosticTool:
                 break
             elif choice == "1":
                 network_tools.configure_apn()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "2":
                 tools.check_pdp_status()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "3":
                 tools.check_data_connection()
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "4":
                 # Show current PDP contexts and their activation status first
                 console.print("\n[bold cyan]📋 Available PDP Contexts:[/bold cyan]\n")
@@ -2842,14 +2879,16 @@ class ModemDiagnosticTool:
 
                     if not inactive_cids:
                         console.print("[yellow]All configured PDP contexts are already active![/yellow]")
-                        Prompt.ask("\nPress Enter to continue")
+                        console.print()
+                        auto_continue(3, "Returning to menu")
                         continue
 
                     console.print(f"[dim]Available CIDs to activate: {', '.join(inactive_cids)}[/dim]")
                     cid = Prompt.ask("Enter CID to activate", choices=inactive_cids, default=inactive_cids[0] if inactive_cids else "1")
                 else:
                     console.print("[yellow]No PDP contexts configured. Use option 1 to configure APN first.[/yellow]")
-                    Prompt.ask("\nPress Enter to continue")
+                    console.print()
+                    auto_continue(3, "Returning to menu")
                     continue
 
                 result = self.modem.send_at_command(f"AT+CGACT=1,{cid}")
@@ -2864,7 +2903,8 @@ class ModemDiagnosticTool:
                         console.print(f"[cyan]IP Address result:[/cyan] {ip_result.response}")
                 else:
                     console.print(f"[red]✗ Activation failed: {result.error}[/red]")
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "5":
                 # Show current PDP contexts and their activation status first
                 console.print("\n[bold cyan]📋 Active PDP Contexts:[/bold cyan]\n")
@@ -2902,14 +2942,16 @@ class ModemDiagnosticTool:
 
                     if not active_cid_strs:
                         console.print("[yellow]No active PDP contexts to deactivate![/yellow]")
-                        Prompt.ask("\nPress Enter to continue")
+                        console.print()
+                        auto_continue(3, "Returning to menu")
                         continue
 
                     console.print(f"[dim]Active CIDs: {', '.join(active_cid_strs)}[/dim]")
                     cid = Prompt.ask("Enter CID to deactivate", choices=active_cid_strs, default=active_cid_strs[0] if active_cid_strs else "1")
                 else:
                     console.print("[yellow]No PDP contexts configured.[/yellow]")
-                    Prompt.ask("\nPress Enter to continue")
+                    console.print()
+                    auto_continue(3, "Returning to menu")
                     continue
 
                 result = self.modem.send_at_command(f"AT+CGACT=0,{cid}")
@@ -2917,7 +2959,8 @@ class ModemDiagnosticTool:
                     console.print(f"[green]✓ PDP context {cid} deactivated[/green]")
                 else:
                     console.print(f"[red]✗ Deactivation failed: {result.error}[/red]")
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "6":
                 # Show current contexts first
                 console.print("\n[bold cyan]Current PDP Contexts:[/bold cyan]\n")
@@ -2962,7 +3005,8 @@ class ModemDiagnosticTool:
                 else:
                     console.print("[yellow]No PDP contexts found[/yellow]")
 
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "7":
                 self.data_transfer_test_menu()
 
@@ -3019,7 +3063,8 @@ class ModemDiagnosticTool:
                     console.print("[yellow]No cellular interfaces detected[/yellow]")
                     console.print("[dim]Tip: Ensure your cellular modem is connected and has an active PDP context[/dim]")
 
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             else:
                 # Determine test size
                 size_map = {
@@ -3050,7 +3095,8 @@ class ModemDiagnosticTool:
                 # Confirm before sending
                 if not Confirm.ask(f"\n[yellow]⚠️  Send {test_size:,} bytes of test data? (This will use real cellular data)[/yellow]", default=False):
                     console.print("[yellow]Test cancelled[/yellow]")
-                    Prompt.ask("\nPress Enter to continue")
+                    console.print()
+                    auto_continue(2, "Returning to menu")
                     continue
 
                 # ROUTING VERIFICATION - Critical for cellular data test
@@ -3264,8 +3310,9 @@ class ModemDiagnosticTool:
                                                 console.print("[yellow]⚠ Default route may not be set correctly[/yellow]")
 
                                         console.print()
-                                        console.print("[bold green]✓ Configuration complete! Proceeding to test...[/bold green]")
-                                        time.sleep(2)
+                                        console.print("[bold green]✓ Configuration complete![/bold green]")
+                                        console.print("[cyan]→ Proceeding to test...[/cyan]")
+                                        time.sleep(1.5)
 
                                         # DON'T continue - fall through to run the test immediately
                                         break  # Break out of the inner menu loop to proceed with test
@@ -3353,7 +3400,8 @@ class ModemDiagnosticTool:
 
                         if fix_choice == "0":
                             console.print("[yellow]Test cancelled[/yellow]")
-                            Prompt.ask("\nPress Enter to continue")
+                            console.print()
+                            auto_continue(2, "Returning to menu")
                             continue
                         elif fix_choice == "1":
                             # Disable WiFi temporarily
@@ -3368,7 +3416,8 @@ class ModemDiagnosticTool:
                                 console.print("[yellow]You may need to run with sudo or disable WiFi manually[/yellow]")
                                 if not Confirm.ask("\nContinue with test anyway?", default=False):
                                     console.print("[yellow]Test cancelled[/yellow]")
-                                    Prompt.ask("\nPress Enter to continue")
+                                    console.print()
+                                    auto_continue(2, "Returning to menu")
                                     continue
                         elif fix_choice == "2" and routing['cellular_interface']:
                             # Configure route automatically
@@ -3381,7 +3430,8 @@ class ModemDiagnosticTool:
                             if not target_ip:
                                 console.print("[red]✗ Failed to resolve httpbin.org[/red]")
                                 console.print("[yellow]DNS resolution failed. Try option 1 (Disable WiFi) instead.[/yellow]")
-                                Prompt.ask("\nPress Enter to continue")
+                                console.print()
+                                auto_continue(3, "Returning to menu")
                                 continue
 
                             console.print(f"[green]✓ Resolved to {target_ip}[/green]")
@@ -3398,7 +3448,8 @@ class ModemDiagnosticTool:
                                 console.print("[yellow]You may need to run with sudo[/yellow]")
                                 if not Confirm.ask("\nContinue with test anyway?", default=False):
                                     console.print("[yellow]Test cancelled[/yellow]")
-                                    Prompt.ask("\nPress Enter to continue")
+                                    console.print()
+                                    auto_continue(2, "Returning to menu")
                                     continue
                         elif fix_choice == "2" and not routing['cellular_interface']:
                             # Show manual commands (when no cellular interface)
@@ -3445,7 +3496,8 @@ class ModemDiagnosticTool:
                             console.print("[red]Hologram dashboard will show ZERO usage increase![/red]")
                             if not Confirm.ask("\nAre you sure you want to continue?", default=False):
                                 console.print("[yellow]Test cancelled[/yellow]")
-                                Prompt.ask("\nPress Enter to continue")
+                                console.print()
+                                auto_continue(2, "Returning to menu")
                                 continue
 
                 # Detect interface (optional)
@@ -3524,7 +3576,8 @@ class ModemDiagnosticTool:
                         if Confirm.ask("[yellow]Re-enable WiFi now?[/yellow]", default=True):
                             transfer_test.enable_wifi()
 
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
 
         # Cleanup: Remove routes and re-enable WiFi when exiting menu
         cleanup_needed = transfer_test.wifi_was_disabled or len(transfer_test.routes_added) > 0 or len(transfer_test.services_stopped) > 0
@@ -3624,7 +3677,8 @@ class ModemDiagnosticTool:
                     console.print(f"\n[cyan]Parsed Data:[/cyan]")
                     console.print(json.dumps(result.parsed_data, indent=2))
 
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
 
     def manual_at_command(self):
         """Send manual AT commands"""
@@ -3698,7 +3752,8 @@ class ModemDiagnosticTool:
 
         if not diag.modem_vendor:
             console.print("[yellow]Could not detect modem vendor. Vendor-specific features unavailable.[/yellow]")
-            Prompt.ask("\nPress Enter to continue")
+            console.print()
+            auto_continue(3, "Returning to menu")
             return
 
         if diag.modem_vendor == 'Quectel':
@@ -3710,7 +3765,8 @@ class ModemDiagnosticTool:
         else:
             console.print(f"[yellow]No specialized tools available for {diag.modem_vendor}[/yellow]")
             console.print("[dim]Using generic AT commands via Manual AT Command option[/dim]")
-            Prompt.ask("\nPress Enter to continue")
+            console.print()
+            auto_continue(3, "Returning to menu")
 
     def quectel_tools_menu(self, model: str = None):
         """Quectel-specific tools"""
@@ -3738,46 +3794,55 @@ class ModemDiagnosticTool:
             elif choice == "1":
                 result = self.modem.send_at_command("AT+QENG=\"servingcell\"")
                 self._display_at_result("Advanced Cell Information", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "2":
                 result = self.modem.send_at_command("AT+QNWINFO")
                 self._display_at_result("Network Information", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "3":
                 result = self.modem.send_at_command("AT+QTEMP")
                 self._display_at_result("Temperature Reading", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "4":
                 console.print("\n[cyan]Scanning neighbor cells (may take 5-10 seconds)...[/cyan]")
                 result = self.modem.send_at_command("AT+QENG=\"neighbourcell\"", wait_time=10)
                 self._display_at_result("Neighboring Cells", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(5, "Returning to menu")
             elif choice == "5":
                 result = self.modem.send_at_command("AT+QUIMSLOT?")
                 self._display_at_result("SIM Slot Configuration", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "6":
                 result = self.modem.send_at_command("AT+QGPS?")
                 self._display_at_result("GPS Status", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
             elif choice == "7":
                 result = self.modem.send_at_command("AT+QESIM=\"eid\"")
                 self._display_at_result("eSIM Support (EID)", result)
-                Prompt.ask("\nPress Enter to continue")
+                console.print()
+                auto_continue(3, "Returning to menu")
 
     def sierra_tools_menu(self):
         """Sierra Wireless-specific tools"""
         console.print("\n[yellow]Sierra Wireless tools - Basic implementation[/yellow]")
         result = self.modem.send_at_command("AT!GSTATUS?")
         self._display_at_result("Sierra Status", result)
-        Prompt.ask("\nPress Enter to continue")
+        console.print()
+        auto_continue(3, "Returning to menu")
 
     def ublox_tools_menu(self):
         """u-blox-specific tools"""
         console.print("\n[yellow]u-blox tools - Basic implementation[/yellow]")
         result = self.modem.send_at_command("AT+UCGED?")
         self._display_at_result("u-blox Cell Info", result)
-        Prompt.ask("\nPress Enter to continue")
+        console.print()
+        auto_continue(3, "Returning to menu")
 
     def _display_at_result(self, title: str, result: ATResponse):
         """Display AT command result in formatted panel"""
@@ -3863,7 +3928,8 @@ class ModemDiagnosticTool:
         except Exception as e:
             console.print(f"[red]✗ Failed to save report: {e}[/red]")
 
-        Prompt.ask("\nPress Enter to continue")
+        console.print()
+        auto_continue(3, "Returning to menu")
 
     def restore_network(self):
         """Emergency network restoration - removes cellular routes and restores WiFi"""
@@ -3936,7 +4002,7 @@ class ModemDiagnosticTool:
         console.print("  • Reboot system: sudo reboot")
         console.print()
 
-        Prompt.ask("Press Enter to continue")
+        auto_continue(5, "Returning to menu")
 
     def run(self):
         """Main application entry point"""
