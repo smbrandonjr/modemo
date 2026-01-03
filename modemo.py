@@ -1552,8 +1552,28 @@ class DataTransferTest:
             console.print("[yellow]Service management only supported on Linux[/yellow]")
             return False
 
+        # Check if user is connected via SSH
+        ssh_connection = os.environ.get('SSH_CONNECTION') or os.environ.get('SSH_CLIENT')
+
         console.print("\n[cyan]Stopping interfering services...[/cyan]")
-        services_to_stop = ['ModemManager', 'NetworkManager']
+
+        # Always safe to stop ModemManager
+        services_to_stop = ['ModemManager']
+
+        # Only stop NetworkManager if not connected via SSH
+        if ssh_connection:
+            console.print("[yellow]⚠️  SSH connection detected - skipping NetworkManager[/yellow]")
+            console.print("[dim]Stopping NetworkManager could drop your SSH connection[/dim]")
+            console.print("[dim]Will only stop ModemManager (safe for cellular)[/dim]")
+        else:
+            # Check if user wants to stop NetworkManager
+            console.print("[yellow]⚠️  Stopping NetworkManager may affect your network connection[/yellow]")
+            if Confirm.ask("Stop NetworkManager too?", default=False):
+                services_to_stop.append('NetworkManager')
+            else:
+                console.print("[dim]Will only stop ModemManager[/dim]")
+
+        console.print()
         stopped_any = False
 
         for service in services_to_stop:
