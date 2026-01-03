@@ -1222,6 +1222,7 @@ class DataTransferTest:
         self.modem = modem
         self.wifi_was_disabled = False
         self.original_wifi_interface = None
+        self.routes_added = []  # Track routes we add for cleanup
 
     def get_default_route(self) -> Optional[Dict[str, str]]:
         """Get the current default route interface"""
@@ -1381,6 +1382,80 @@ class DataTransferTest:
             console.print(f"[red]Error re-enabling WiFi: {e}[/red]")
 
         return False
+
+    def add_temporary_route(self, destination: str, interface: str) -> bool:
+        """Add a temporary route for specific destination via cellular interface"""
+        try:
+            if IS_LINUX:
+                # Check if route already exists
+                check_result = subprocess.run(['ip', 'route', 'show', destination],
+                                            capture_output=True, text=True, timeout=5)
+                if check_result.returncode == 0 and check_result.stdout.strip():
+                    console.print(f"[yellow]Route for {destination} already exists, removing old route first[/yellow]")
+                    subprocess.run(['sudo', 'ip', 'route', 'del', destination],
+                                 capture_output=True, text=True, timeout=5)
+
+                # Add new route
+                result = subprocess.run(['sudo', 'ip', 'route', 'add', destination, 'dev', interface],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.routes_added.append({'destination': destination, 'interface': interface})
+                    return True
+                else:
+                    console.print(f"[red]Failed to add route: {result.stderr}[/red]")
+                    return False
+            elif IS_WINDOWS:
+                # Windows: route add destination mask 255.255.255.255 interface_ip
+                result = subprocess.run(['route', 'add', destination, 'mask', '255.255.255.255', interface],
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    self.routes_added.append({'destination': destination, 'interface': interface})
+                    return True
+                else:
+                    return False
+        except Exception as e:
+            console.print(f"[red]Error adding route: {e}[/red]")
+            return False
+
+    def remove_temporary_routes(self) -> bool:
+        """Remove all temporary routes that were added"""
+        if not self.routes_added:
+            return True
+
+        success = True
+        for route in self.routes_added:
+            try:
+                if IS_LINUX:
+                    result = subprocess.run(['sudo', 'ip', 'route', 'del', route['destination']],
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        console.print(f"[green]✓ Removed route for {route['destination']}[/green]")
+                    else:
+                        console.print(f"[yellow]⚠ Could not remove route for {route['destination']}[/yellow]")
+                        success = False
+                elif IS_WINDOWS:
+                    result = subprocess.run(['route', 'delete', route['destination']],
+                                          capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        console.print(f"[green]✓ Removed route for {route['destination']}[/green]")
+                    else:
+                        success = False
+            except Exception as e:
+                console.print(f"[yellow]Error removing route: {e}[/yellow]")
+                success = False
+
+        self.routes_added = []
+        return success
+
+    def resolve_hostname(self, hostname: str) -> Optional[str]:
+        """Resolve hostname to IP address"""
+        try:
+            import socket
+            ip = socket.gethostbyname(hostname)
+            return ip
+        except Exception as e:
+            console.print(f"[yellow]Could not resolve {hostname}: {e}[/yellow]")
+            return None
 
     def verify_routing(self) -> Dict[str, any]:
         """Comprehensive routing verification before test"""
@@ -2767,12 +2842,21 @@ class ModemDiagnosticTool:
                         console.print()
                         console.print("  Options:")
                         console.print("    1. [green]Disable WiFi temporarily (recommended)[/green]")
-                        console.print("    2. Show manual routing commands")
-                        console.print("    3. Continue anyway (test will use WiFi, NOT cellular)")
-                        console.print("    0. Cancel test")
-                        console.print()
 
-                        fix_choice = Prompt.ask("Select option", choices=["0", "1", "2", "3"], default="1")
+                        # Only show automatic route option if we have a cellular interface
+                        if routing['cellular_interface']:
+                            console.print("    2. [green]Configure route automatically (keeps WiFi enabled)[/green]")
+                            console.print("    3. Show manual routing commands")
+                            console.print("    4. Continue anyway (test will use WiFi, NOT cellular)")
+                            console.print("    0. Cancel test")
+                            console.print()
+                            fix_choice = Prompt.ask("Select option", choices=["0", "1", "2", "3", "4"], default="1")
+                        else:
+                            console.print("    2. Show manual routing commands")
+                            console.print("    3. Continue anyway (test will use WiFi, NOT cellular)")
+                            console.print("    0. Cancel test")
+                            console.print()
+                            fix_choice = Prompt.ask("Select option", choices=["0", "1", "2", "3"], default="1")
 
                         if fix_choice == "0":
                             console.print("[yellow]Test cancelled[/yellow]")
@@ -2793,8 +2877,56 @@ class ModemDiagnosticTool:
                                     console.print("[yellow]Test cancelled[/yellow]")
                                     Prompt.ask("\nPress Enter to continue")
                                     continue
-                        elif fix_choice == "2":
-                            # Show manual commands
+                        elif fix_choice == "2" and routing['cellular_interface']:
+                            # Configure route automatically
+                            console.print("\n[cyan]Configuring temporary route for httpbin.org...[/cyan]")
+                            console.print("[dim](Route will be removed after test or when you exit)[/dim]\n")
+
+                            # Resolve httpbin.org to IP
+                            console.print("[cyan]Resolving httpbin.org...[/cyan]")
+                            target_ip = transfer_test.resolve_hostname("httpbin.org")
+                            if not target_ip:
+                                console.print("[red]✗ Failed to resolve httpbin.org[/red]")
+                                console.print("[yellow]DNS resolution failed. Try option 1 (Disable WiFi) instead.[/yellow]")
+                                Prompt.ask("\nPress Enter to continue")
+                                continue
+
+                            console.print(f"[green]✓ Resolved to {target_ip}[/green]")
+
+                            # Add temporary route
+                            console.print(f"[cyan]Adding route for {target_ip} via {routing['cellular_interface']}...[/cyan]")
+                            if transfer_test.add_temporary_route(target_ip, routing['cellular_interface']):
+                                console.print(f"[green]✓ Route added successfully[/green]")
+                                console.print(f"[green]✓ Traffic to httpbin.org will now use {routing['cellular_interface']}[/green]")
+                                console.print("[dim]WiFi remains enabled for other traffic[/dim]")
+                                time.sleep(2)
+                            else:
+                                console.print("[red]✗ Failed to add route[/red]")
+                                console.print("[yellow]You may need to run with sudo[/yellow]")
+                                if not Confirm.ask("\nContinue with test anyway?", default=False):
+                                    console.print("[yellow]Test cancelled[/yellow]")
+                                    Prompt.ask("\nPress Enter to continue")
+                                    continue
+                        elif fix_choice == "2" and not routing['cellular_interface']:
+                            # Show manual commands (when no cellular interface)
+                            console.print("\n[bold cyan]Manual Routing Commands:[/bold cyan]\n")
+                            if IS_LINUX:
+                                console.print("[cyan]Disable WiFi:[/cyan]")
+                                console.print(f"  sudo ip link set {wifi_status['wifi_interface']} down")
+                                console.print()
+                                console.print("[cyan]Re-enable WiFi after test:[/cyan]")
+                                console.print(f"  sudo ip link set {wifi_status['wifi_interface']} up")
+                            elif IS_WINDOWS:
+                                console.print("[cyan]Disable WiFi:[/cyan]")
+                                console.print(f"  netsh interface set interface \"{wifi_status['wifi_interface']}\" disabled")
+                                console.print()
+                                console.print("[cyan]Re-enable WiFi:[/cyan]")
+                                console.print(f"  netsh interface set interface \"{wifi_status['wifi_interface']}\" enabled")
+                            console.print()
+                            Prompt.ask("Press Enter to return to menu")
+                            continue
+                        elif fix_choice == "3" and routing['cellular_interface']:
+                            # Show manual commands (when cellular interface exists)
                             console.print("\n[bold cyan]Manual Routing Commands:[/bold cyan]\n")
                             if IS_LINUX:
                                 console.print("[cyan]Disable WiFi:[/cyan]")
@@ -2814,7 +2946,8 @@ class ModemDiagnosticTool:
                             console.print()
                             Prompt.ask("Press Enter to return to menu")
                             continue
-                        elif fix_choice == "3":
+                        elif (fix_choice == "3" and not routing['cellular_interface']) or (fix_choice == "4" and routing['cellular_interface']):
+                            # Continue anyway
                             console.print("\n[bold red]⚠️  WARNING: Test will use WiFi, NOT cellular![/bold red]")
                             console.print("[red]Hologram dashboard will show ZERO usage increase![/red]")
                             if not Confirm.ask("\nAre you sure you want to continue?", default=False):
@@ -2925,21 +3058,49 @@ class ModemDiagnosticTool:
                     console.print("  • Ensure routing is configured to use cellular")
                     console.print("  • Try disabling WiFi temporarily")
 
-                # Re-enable WiFi if it was disabled for this test
-                if transfer_test.wifi_was_disabled:
+                # Cleanup after test
+                cleanup_needed = transfer_test.wifi_was_disabled or len(transfer_test.routes_added) > 0
+
+                if cleanup_needed:
                     console.print()
-                    if Confirm.ask("[yellow]Re-enable WiFi now?[/yellow]", default=True):
-                        transfer_test.enable_wifi()
+                    console.print("[bold cyan]🧹 Cleanup:[/bold cyan]")
+
+                    # Remove temporary routes
+                    if len(transfer_test.routes_added) > 0:
+                        console.print("[cyan]Removing temporary routes...[/cyan]")
+                        if transfer_test.remove_temporary_routes():
+                            console.print("[green]✓ Routes removed successfully[/green]")
+                        else:
+                            console.print("[yellow]⚠ Some routes may not have been removed[/yellow]")
+
+                    # Re-enable WiFi if it was disabled
+                    if transfer_test.wifi_was_disabled:
+                        if Confirm.ask("[yellow]Re-enable WiFi now?[/yellow]", default=True):
+                            transfer_test.enable_wifi()
 
                 Prompt.ask("\nPress Enter to continue")
 
-        # Cleanup: Re-enable WiFi when exiting menu
-        if transfer_test.wifi_was_disabled:
-            console.print("\n[yellow]⚠️  WiFi is still disabled from testing[/yellow]")
-            if Confirm.ask("Re-enable WiFi before exiting?", default=True):
-                transfer_test.enable_wifi()
-            else:
-                console.print("[dim]Remember to re-enable WiFi manually later![/dim]")
+        # Cleanup: Remove routes and re-enable WiFi when exiting menu
+        cleanup_needed = transfer_test.wifi_was_disabled or len(transfer_test.routes_added) > 0
+
+        if cleanup_needed:
+            console.print("\n[bold cyan]🧹 Cleanup needed before exiting:[/bold cyan]")
+
+            # Remove temporary routes
+            if len(transfer_test.routes_added) > 0:
+                console.print(f"\n[yellow]⚠️  {len(transfer_test.routes_added)} temporary route(s) still active[/yellow]")
+                if Confirm.ask("Remove temporary routes before exiting?", default=True):
+                    transfer_test.remove_temporary_routes()
+                else:
+                    console.print("[dim]Routes will persist until system reboot or manual removal[/dim]")
+
+            # Re-enable WiFi
+            if transfer_test.wifi_was_disabled:
+                console.print("\n[yellow]⚠️  WiFi is still disabled from testing[/yellow]")
+                if Confirm.ask("Re-enable WiFi before exiting?", default=True):
+                    transfer_test.enable_wifi()
+                else:
+                    console.print("[dim]Remember to re-enable WiFi manually later![/dim]")
 
     def common_at_commands_menu(self):
         """Menu of common AT commands with descriptions"""

@@ -474,31 +474,58 @@ The tool now verifies routing BEFORE sending data:
 
 ```
 After confirming test:
-┌─────────────────────────────┐
-│ 🔍 Verifying Routing...     │
-│                             │
-│ Cellular: ✓ wwan0 (Active) │
-│ WiFi:     ✗ wlan0 (DEFAULT!)│
-│ Route:    wlan0 (WiFi)      │
-│                             │
-│ Status: ✗ NOT OK           │
-│                             │
-│ Options:                    │
-│ 1. Disable WiFi (recommended)│
-│ 2. Show manual commands     │
-│ 3. Continue anyway          │
-│ 0. Cancel                   │
-└─────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│ 🔍 Verifying Routing...                     │
+│                                             │
+│ Cellular: ✓ wwan0 (Active)                 │
+│ WiFi:     ✗ wlan0 (DEFAULT!)               │
+│ Route:    wlan0 (WiFi)                      │
+│                                             │
+│ Status: ✗ NOT OK                           │
+│                                             │
+│ Options:                                    │
+│ 1. Disable WiFi temporarily (recommended)   │
+│ 2. Configure route automatically (keeps WiFi)│
+│ 3. Show manual commands                     │
+│ 4. Continue anyway                          │
+│ 0. Cancel                                   │
+└─────────────────────────────────────────────┘
 ```
 
-**WiFi Management:**
-- Tool can disable WiFi temporarily (needs sudo)
-- Automatically re-enabled after test
-- One-click fix for routing issues
+**Routing Fix Options:**
+
+**Option 1: Disable WiFi Temporarily (Recommended)**
+- Disables WiFi completely during test
+- Ensures ALL traffic uses cellular
+- WiFi automatically re-enabled after test
+- Requires sudo permissions
+
+**Option 2: Configure Route Automatically (NEW!)**
+- Adds temporary route for httpbin.org ONLY
+- WiFi stays enabled for other traffic
+- Route automatically removed after test
+- Perfect for dual-network environments
+- Requires sudo permissions
+
+**Option 3: Manual Commands**
+- Shows commands you can run yourself
+- Useful if automatic methods fail
+- Must exit program to run commands
+
+**Automatic Cleanup:**
+After each test, the tool automatically:
+- ✓ Removes all temporary routes
+- ✓ Offers to re-enable WiFi
+- ✓ Restores network to original state
+
+When exiting the menu:
+- ✓ Warns if routes or WiFi changes still active
+- ✓ Offers to clean up before exit
 
 **Tips:**
 - Tool handles routing automatically now!
-- Just choose "Disable WiFi temporarily" if prompted
+- **Option 1** (disable WiFi): Best for simple setups
+- **Option 2** (route config): Best for servers/systems that need WiFi
 - Dashboard updates take 1-2 minutes
 - Actual may vary ±10% due to network conditions
 - Uses real data (costs apply)

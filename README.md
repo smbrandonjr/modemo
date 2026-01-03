@@ -322,26 +322,47 @@ Automatically selecting:
 The tool now automatically checks your routing configuration before sending test data:
 - ✅ Detects if WiFi is your default route
 - ✅ Warns you if data will go over WiFi instead of cellular
-- ✅ Offers to disable WiFi temporarily with one click
-- ✅ Auto re-enables WiFi after test
+- ✅ Offers multiple automatic fix options with one click
+- ✅ Auto re-enables WiFi and removes routes after test
 - ✅ Shows manual routing commands if needed
 
 **What Happens:**
 1. You confirm to send test data
 2. Tool checks routing: "WiFi (wlan0) is DEFAULT ROUTE!"
-3. You're given options:
-   - **Disable WiFi temporarily (recommended)** ← One-click fix
-   - Show manual routing commands
-   - Continue anyway (will use WiFi, not cellular)
-   - Cancel test
-4. Tool disables WiFi (if you chose option 1)
+3. You're given fix options:
+   - **Option 1: Disable WiFi temporarily (recommended)** ← Simple, reliable
+   - **Option 2: Configure route automatically (NEW!)** ← Keeps WiFi enabled
+   - **Option 3:** Show manual routing commands
+   - **Option 4:** Continue anyway (will use WiFi, not cellular)
+   - **Option 0:** Cancel test
+4. Tool executes your chosen fix (disables WiFi OR adds specific route)
 5. Test runs over cellular
-6. Tool offers to re-enable WiFi
+6. Tool automatically cleans up (re-enables WiFi, removes routes)
+
+**Routing Fix Options:**
+
+**Option 1: Disable WiFi Temporarily**
+- Disables WiFi completely during test
+- Ensures ALL traffic uses cellular
+- Best for simple setups and testing
+- WiFi automatically re-enabled after test
+
+**Option 2: Configure Route Automatically (NEW!)**
+- Adds temporary route for httpbin.org ONLY via cellular
+- WiFi stays enabled for other traffic
+- Perfect for servers/systems that need WiFi connectivity
+- Route automatically removed after test
+- Both options require sudo/admin privileges
+
+**Automatic Cleanup:**
+- After test: Removes temporary routes and offers to re-enable WiFi
+- On menu exit: Warns if changes still active and offers cleanup
+- Network configuration restored to original state
 
 **Important Notes:**
 - Uses real cellular data (costs apply)
-- **Routing is now verified automatically** - no more guessing!
-- WiFi management requires sudo/admin privileges
+- **Routing is now verified AND fixed automatically** - no more guessing!
+- Route management and WiFi control require sudo/admin privileges
 - Dashboard updates may take 1-2 minutes
 - Actual usage may vary ±10% due to network conditions
 
