@@ -1223,6 +1223,7 @@ class DataTransferTest:
         self.wifi_was_disabled = False
         self.original_wifi_interface = None
         self.routes_added = []  # Track routes we add for cleanup
+        self.services_stopped = []  # Track which services we stopped
 
     def get_default_route(self) -> Optional[Dict[str, str]]:
         """Get the current default route interface"""
@@ -1544,6 +1545,73 @@ class DataTransferTest:
         except Exception as e:
             console.print(f"[yellow]Error adding default route: {e}[/yellow]")
             return False
+
+    def stop_interfering_services(self) -> bool:
+        """Stop ModemManager and NetworkManager that interfere with cellular configuration"""
+        if not IS_LINUX:
+            console.print("[yellow]Service management only supported on Linux[/yellow]")
+            return False
+
+        console.print("\n[cyan]Stopping interfering services...[/cyan]")
+        services_to_stop = ['ModemManager', 'NetworkManager']
+        stopped_any = False
+
+        for service in services_to_stop:
+            try:
+                # Check if service is running
+                check_result = subprocess.run(['systemctl', 'is-active', service],
+                                            capture_output=True, text=True, timeout=5)
+
+                if check_result.stdout.strip() == 'active':
+                    # Service is running, stop it
+                    console.print(f"[cyan]Stopping {service}...[/cyan]")
+                    result = subprocess.run(['sudo', 'systemctl', 'stop', service],
+                                          capture_output=True, text=True, timeout=10)
+
+                    if result.returncode == 0:
+                        console.print(f"[green]✓ Stopped {service}[/green]")
+                        self.services_stopped.append(service)
+                        stopped_any = True
+                    else:
+                        console.print(f"[red]✗ Failed to stop {service}: {result.stderr}[/red]")
+                else:
+                    console.print(f"[dim]{service} not running[/dim]")
+
+            except Exception as e:
+                console.print(f"[yellow]Could not check/stop {service}: {e}[/yellow]")
+
+        if stopped_any:
+            console.print("\n[green]✓ Services stopped - cellular interface should be stable now[/green]")
+            time.sleep(2)  # Wait for services to fully stop
+
+        return stopped_any
+
+    def restart_stopped_services(self) -> bool:
+        """Restart services that were stopped during configuration"""
+        if not self.services_stopped:
+            return True
+
+        console.print("\n[cyan]Restarting services...[/cyan]")
+        success = True
+
+        for service in self.services_stopped:
+            try:
+                console.print(f"[cyan]Starting {service}...[/cyan]")
+                result = subprocess.run(['sudo', 'systemctl', 'start', service],
+                                      capture_output=True, text=True, timeout=10)
+
+                if result.returncode == 0:
+                    console.print(f"[green]✓ Restarted {service}[/green]")
+                else:
+                    console.print(f"[yellow]⚠ Could not restart {service}: {result.stderr}[/yellow]")
+                    success = False
+
+            except Exception as e:
+                console.print(f"[red]✗ Error restarting {service}: {e}[/red]")
+                success = False
+
+        self.services_stopped = []
+        return success
 
     def verify_routing(self) -> Dict[str, any]:
         """Comprehensive routing verification before test"""
@@ -3109,13 +3177,50 @@ class ModemDiagnosticTool:
                                             console.print("[red]✗ Warning: Interface went DOWN immediately after configuration[/red]")
                                             console.print("[yellow]This usually means ModemManager or NetworkManager is interfering[/yellow]")
                                             console.print()
-                                            console.print("[bold cyan]Quick Fix:[/bold cyan]")
-                                            console.print("  sudo systemctl stop ModemManager")
-                                            console.print("  sudo systemctl stop NetworkManager")
-                                            console.print()
-                                            console.print("[yellow]Then try the configuration again[/yellow]")
-                                            Prompt.ask("\nPress Enter to return to menu")
-                                            continue
+
+                                            if Confirm.ask("[green]Stop interfering services and retry?[/green]", default=True):
+                                                # Stop the services
+                                                if transfer_test.stop_interfering_services():
+                                                    # Retry configuration
+                                                    console.print("\n[cyan]Retrying interface configuration...[/cyan]")
+                                                    if transfer_test.configure_cellular_interface(interface_name, modem_ip):
+                                                        console.print("[green]✓ Interface configured successfully![/green]")
+
+                                                        # Verify again
+                                                        time.sleep(2)
+                                                        verify_result = subprocess.run(['ip', 'addr', 'show', interface_name],
+                                                                                     capture_output=True, text=True, timeout=5)
+                                                        interface_still_up = 'UP' in verify_result.stdout and 'state UP' in verify_result.stdout
+                                                        has_ip = modem_ip in verify_result.stdout
+
+                                                        if interface_still_up and has_ip:
+                                                            console.print("[green]✓ Interface is UP and stable![/green]")
+                                                            # Continue with the rest of the configuration
+                                                        else:
+                                                            console.print("[red]✗ Interface still unstable[/red]")
+                                                            console.print("[yellow]Try manually: sudo systemctl stop ModemManager NetworkManager[/yellow]")
+                                                            Prompt.ask("\nPress Enter to return to menu")
+                                                            continue
+                                                    else:
+                                                        console.print("[red]✗ Configuration failed again[/red]")
+                                                        Prompt.ask("\nPress Enter to return to menu")
+                                                        continue
+                                                else:
+                                                    console.print("[yellow]Could not stop services automatically[/yellow]")
+                                                    console.print("\n[bold cyan]Manual Steps:[/bold cyan]")
+                                                    console.print("  sudo systemctl stop ModemManager")
+                                                    console.print("  sudo systemctl stop NetworkManager")
+                                                    console.print()
+                                                    Prompt.ask("Press Enter to return to menu")
+                                                    continue
+                                            else:
+                                                console.print("\n[bold cyan]Manual Steps:[/bold cyan]")
+                                                console.print("  sudo systemctl stop ModemManager")
+                                                console.print("  sudo systemctl stop NetworkManager")
+                                                console.print("  Then try configuration again")
+                                                console.print()
+                                                Prompt.ask("Press Enter to return to menu")
+                                                continue
 
                                         if not has_ip:
                                             console.print("[red]✗ Warning: IP address not assigned to interface[/red]")
@@ -3402,7 +3507,7 @@ class ModemDiagnosticTool:
                 Prompt.ask("\nPress Enter to continue")
 
         # Cleanup: Remove routes and re-enable WiFi when exiting menu
-        cleanup_needed = transfer_test.wifi_was_disabled or len(transfer_test.routes_added) > 0
+        cleanup_needed = transfer_test.wifi_was_disabled or len(transfer_test.routes_added) > 0 or len(transfer_test.services_stopped) > 0
 
         if cleanup_needed:
             console.print("\n[bold cyan]🧹 Cleanup needed before exiting:[/bold cyan]")
@@ -3422,6 +3527,14 @@ class ModemDiagnosticTool:
                     transfer_test.enable_wifi()
                 else:
                     console.print("[dim]Remember to re-enable WiFi manually later![/dim]")
+
+            # Restart stopped services
+            if len(transfer_test.services_stopped) > 0:
+                console.print(f"\n[yellow]⚠️  {len(transfer_test.services_stopped)} service(s) were stopped: {', '.join(transfer_test.services_stopped)}[/yellow]")
+                if Confirm.ask("Restart stopped services before exiting?", default=True):
+                    transfer_test.restart_stopped_services()
+                else:
+                    console.print("[dim]Services will remain stopped until manually restarted[/dim]")
 
     def common_at_commands_menu(self):
         """Menu of common AT commands with descriptions"""
