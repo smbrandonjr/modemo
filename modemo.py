@@ -2596,18 +2596,115 @@ class ModemDiagnosticTool:
                 tools.check_data_connection()
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "4":
-                cid = Prompt.ask("Enter CID to activate", default="1")
+                # Show current PDP contexts and their activation status first
+                console.print("\n[bold cyan]📋 Available PDP Contexts:[/bold cyan]\n")
+
+                # Get configured contexts
+                context_result = self.modem.send_at_command("AT+CGDCONT?")
+                # Get activation status
+                act_result = self.modem.send_at_command("AT+CGACT?")
+
+                # Parse activation status
+                active_cids = set()
+                if act_result.success and act_result.response:
+                    for line in act_result.response.split('\n'):
+                        if '+CGACT:' in line:
+                            parts = line.replace('+CGACT:', '').strip().split(',')
+                            if len(parts) >= 2 and parts[1].strip() == '1':
+                                active_cids.add(int(parts[0].strip()))
+
+                if 'contexts' in context_result.parsed_data and context_result.parsed_data['contexts']:
+                    table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+                    table.add_column("CID", style="cyan", width=8)
+                    table.add_column("APN", style="white", width=30)
+                    table.add_column("Status", style="white", width=15)
+
+                    for ctx in context_result.parsed_data['contexts']:
+                        cid = ctx['cid']
+                        status = "[green]Active[/green]" if cid in active_cids else "[yellow]Inactive[/yellow]"
+                        table.add_row(str(cid), ctx['apn'], status)
+
+                    console.print(table)
+                    console.print()
+
+                    # Only show inactive contexts as options
+                    inactive_cids = [str(ctx['cid']) for ctx in context_result.parsed_data['contexts'] if ctx['cid'] not in active_cids]
+
+                    if not inactive_cids:
+                        console.print("[yellow]All configured PDP contexts are already active![/yellow]")
+                        Prompt.ask("\nPress Enter to continue")
+                        continue
+
+                    console.print(f"[dim]Available CIDs to activate: {', '.join(inactive_cids)}[/dim]")
+                    cid = Prompt.ask("Enter CID to activate", choices=inactive_cids, default=inactive_cids[0] if inactive_cids else "1")
+                else:
+                    console.print("[yellow]No PDP contexts configured. Use option 1 to configure APN first.[/yellow]")
+                    Prompt.ask("\nPress Enter to continue")
+                    continue
+
                 result = self.modem.send_at_command(f"AT+CGACT=1,{cid}")
                 if result.success:
-                    console.print("[green]✓ PDP context activated[/green]")
+                    console.print(f"[green]✓ PDP context {cid} activated[/green]")
+                    console.print("[dim]Waiting for IP assignment...[/dim]")
+                    time.sleep(3)
+
+                    # Check for IP address
+                    ip_result = self.modem.send_at_command(f"AT+CGPADDR={cid}")
+                    if ip_result.success:
+                        console.print(f"[cyan]IP Address result:[/cyan] {ip_result.response}")
                 else:
                     console.print(f"[red]✗ Activation failed: {result.error}[/red]")
                 Prompt.ask("\nPress Enter to continue")
             elif choice == "5":
-                cid = Prompt.ask("Enter CID to deactivate", default="1")
+                # Show current PDP contexts and their activation status first
+                console.print("\n[bold cyan]📋 Active PDP Contexts:[/bold cyan]\n")
+
+                # Get configured contexts
+                context_result = self.modem.send_at_command("AT+CGDCONT?")
+                # Get activation status
+                act_result = self.modem.send_at_command("AT+CGACT?")
+
+                # Parse activation status
+                active_cids = set()
+                if act_result.success and act_result.response:
+                    for line in act_result.response.split('\n'):
+                        if '+CGACT:' in line:
+                            parts = line.replace('+CGACT:', '').strip().split(',')
+                            if len(parts) >= 2 and parts[1].strip() == '1':
+                                active_cids.add(int(parts[0].strip()))
+
+                if 'contexts' in context_result.parsed_data and context_result.parsed_data['contexts']:
+                    table = Table(box=box.ROUNDED, show_header=True, header_style="bold magenta")
+                    table.add_column("CID", style="cyan", width=8)
+                    table.add_column("APN", style="white", width=30)
+                    table.add_column("Status", style="white", width=15)
+
+                    for ctx in context_result.parsed_data['contexts']:
+                        cid = ctx['cid']
+                        status = "[green]Active[/green]" if cid in active_cids else "[yellow]Inactive[/yellow]"
+                        table.add_row(str(cid), ctx['apn'], status)
+
+                    console.print(table)
+                    console.print()
+
+                    # Only show active contexts as options
+                    active_cid_strs = [str(cid) for cid in active_cids]
+
+                    if not active_cid_strs:
+                        console.print("[yellow]No active PDP contexts to deactivate![/yellow]")
+                        Prompt.ask("\nPress Enter to continue")
+                        continue
+
+                    console.print(f"[dim]Active CIDs: {', '.join(active_cid_strs)}[/dim]")
+                    cid = Prompt.ask("Enter CID to deactivate", choices=active_cid_strs, default=active_cid_strs[0] if active_cid_strs else "1")
+                else:
+                    console.print("[yellow]No PDP contexts configured.[/yellow]")
+                    Prompt.ask("\nPress Enter to continue")
+                    continue
+
                 result = self.modem.send_at_command(f"AT+CGACT=0,{cid}")
                 if result.success:
-                    console.print("[green]✓ PDP context deactivated[/green]")
+                    console.print(f"[green]✓ PDP context {cid} deactivated[/green]")
                 else:
                     console.print(f"[red]✗ Deactivation failed: {result.error}[/red]")
                 Prompt.ask("\nPress Enter to continue")
