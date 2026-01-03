@@ -2561,6 +2561,7 @@ class ModemDiagnosticTool:
                 ("5", "Advanced Tools", "AT commands and vendor features"),
                 ("6", "Change Connection/Port", "Reconnect to different port"),
                 ("7", "Export Diagnostic Report", "Save results to file"),
+                ("8", "🆘 Restore Network", "Emergency network restoration"),
                 ("0", "Exit", "Quit application"),
             ]
 
@@ -2588,6 +2589,8 @@ class ModemDiagnosticTool:
                 self.connect_modem()
             elif choice == "7":
                 self.export_report()
+            elif choice == "8":
+                self.restore_network()
 
     def run_full_diagnostic(self):
         """Run complete diagnostic test suite"""
@@ -3092,17 +3095,55 @@ class ModemDiagnosticTool:
                                         console.print("[green]✓ Interface configured successfully![/green]")
                                         console.print()
 
-                                        # Ask about default route
+                                        # Verify interface is actually UP and has IP
+                                        time.sleep(2)  # Wait for interface to stabilize
+                                        console.print("[cyan]Verifying interface status...[/cyan]")
+
+                                        verify_result = subprocess.run(['ip', 'addr', 'show', interface_name],
+                                                                     capture_output=True, text=True, timeout=5)
+
+                                        interface_still_up = 'UP' in verify_result.stdout and 'state UP' in verify_result.stdout
+                                        has_ip = modem_ip in verify_result.stdout
+
+                                        if not interface_still_up:
+                                            console.print("[red]✗ Warning: Interface went DOWN immediately after configuration[/red]")
+                                            console.print("[yellow]This usually means ModemManager or NetworkManager is interfering[/yellow]")
+                                            console.print()
+                                            console.print("[bold cyan]Quick Fix:[/bold cyan]")
+                                            console.print("  sudo systemctl stop ModemManager")
+                                            console.print("  sudo systemctl stop NetworkManager")
+                                            console.print()
+                                            console.print("[yellow]Then try the configuration again[/yellow]")
+                                            Prompt.ask("\nPress Enter to return to menu")
+                                            continue
+
+                                        if not has_ip:
+                                            console.print("[red]✗ Warning: IP address not assigned to interface[/red]")
+                                            Prompt.ask("\nPress Enter to return to menu")
+                                            continue
+
+                                        console.print("[green]✓ Interface is UP and configured correctly[/green]")
+                                        console.print()
+
+                                        # Ask about default route ONLY if interface is stable
                                         if Confirm.ask("Add default route via cellular? (Makes cellular the default for all traffic)", default=False):
                                             transfer_test.add_default_route_cellular(interface_name)
 
-                                        console.print()
-                                        console.print("[bold green]✓ Ready to test![/bold green]")
-                                        console.print("[dim]Press Enter to continue with the test[/dim]")
-                                        Prompt.ask()
+                                            # Verify routing
+                                            time.sleep(1)
+                                            route_result = subprocess.run(['ip', 'route', 'show', 'default'],
+                                                                        capture_output=True, text=True, timeout=5)
+                                            if interface_name in route_result.stdout:
+                                                console.print(f"[green]✓ Default route confirmed via {interface_name}[/green]")
+                                            else:
+                                                console.print("[yellow]⚠ Default route may not be set correctly[/yellow]")
 
-                                        # Re-verify routing after configuration
-                                        continue
+                                        console.print()
+                                        console.print("[bold green]✓ Configuration complete! Proceeding to test...[/bold green]")
+                                        time.sleep(2)
+
+                                        # DON'T continue - fall through to run the test immediately
+                                        break  # Break out of the inner menu loop to proceed with test
                                     else:
                                         console.print("[red]✗ Failed to configure interface[/red]")
                                         console.print("[yellow]You may need to run with sudo permissions[/yellow]")
@@ -3690,6 +3731,79 @@ class ModemDiagnosticTool:
             console.print(f"[red]✗ Failed to save report: {e}[/red]")
 
         Prompt.ask("\nPress Enter to continue")
+
+    def restore_network(self):
+        """Emergency network restoration - removes cellular routes and restores WiFi"""
+        console.print("\n")
+        console.rule("[bold red]🆘 Emergency Network Restoration", style="red")
+        console.print()
+
+        console.print("[bold yellow]This will:[/bold yellow]")
+        console.print("  • Remove all cellular default routes")
+        console.print("  • Bring WiFi interface UP")
+        console.print("  • Restart DHCP on WiFi")
+        console.print("  • Restore normal internet access")
+        console.print()
+
+        if not Confirm.ask("Proceed with network restoration?", default=True):
+            return
+
+        console.print()
+        console.print("[cyan]Restoring network configuration...[/cyan]")
+        console.print()
+
+        success_count = 0
+        total_steps = 0
+
+        if IS_LINUX:
+            steps = [
+                ("Removing cellular default routes", ["sudo", "ip", "route", "del", "default", "dev", "wwan0"]),
+                ("Removing cellular default routes (alt)", ["sudo", "ip", "route", "del", "default", "dev", "ppp0"]),
+                ("Removing cellular default routes (alt2)", ["sudo", "ip", "route", "del", "default", "dev", "usb0"]),
+                ("Bringing WiFi interface UP", ["sudo", "ip", "link", "set", "wlan0", "up"]),
+                ("Restarting DHCP on WiFi", ["sudo", "dhclient", "wlan0"]),
+            ]
+
+            for description, cmd in steps:
+                total_steps += 1
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                    # Some commands may "fail" if route doesn't exist - that's okay
+                    if result.returncode == 0 or "No such process" in result.stderr or "Cannot find device" in result.stderr:
+                        console.print(f"  [green]✓[/green] {description}")
+                        success_count += 1
+                    else:
+                        console.print(f"  [yellow]⚠[/yellow] {description} - {result.stderr.strip()}")
+                except Exception as e:
+                    console.print(f"  [red]✗[/red] {description} - {e}")
+
+            # Verify internet connectivity
+            console.print()
+            console.print("[cyan]Testing internet connectivity...[/cyan]")
+            try:
+                ping_result = subprocess.run(["ping", "-c", "3", "8.8.8.8"],
+                                           capture_output=True, text=True, timeout=15)
+                if ping_result.returncode == 0:
+                    console.print("[green]✓ Internet access restored![/green]")
+                else:
+                    console.print("[yellow]⚠ Internet test failed - you may need to reboot[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]⚠ Could not test internet: {e}[/yellow]")
+
+        elif IS_WINDOWS:
+            console.print("[yellow]Windows network restoration:[/yellow]")
+            console.print("  1. Open Network & Internet Settings")
+            console.print("  2. Click 'Change adapter options'")
+            console.print("  3. Right-click WiFi adapter → Enable")
+            console.print("  4. Right-click WiFi adapter → Diagnose")
+
+        console.print()
+        console.print("[bold cyan]Additional steps if needed:[/bold cyan]")
+        console.print("  • Restart network: sudo systemctl restart networking")
+        console.print("  • Reboot system: sudo reboot")
+        console.print()
+
+        Prompt.ask("Press Enter to continue")
 
     def run(self):
         """Main application entry point"""
